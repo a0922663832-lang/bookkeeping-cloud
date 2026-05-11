@@ -26,9 +26,10 @@ const booksRoutes = require('./routes/books');
 const journalsRoutes = require('./routes/journals');
 const lookupsRoutes = require('./routes/lookups');
 const reportsRoutes = require('./routes/reports');
+const postingRoutes = require('./routes/posting');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 
 // ── Redis ──────────────────────────────────────────────────────────
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379', {
@@ -237,6 +238,13 @@ app.get('/', (req, res) => {
         'GET /B/:bookCode/reports/yearly?year=',
         'GET /B/:bookCode/reports/counterparties?from=&to=',
       ],
+      posting: [
+        'POST /B/:bookCode/internal/posting (X-Posting-Token header)',
+        'GET /B/:bookCode/pending-journals?status=',
+        'GET /B/:bookCode/pending-journals/:id',
+        'POST /B/:bookCode/pending-journals/:id/approve',
+        'POST /B/:bookCode/pending-journals/:id/reject',
+      ],
     },
     docs: 'see ../Money/公司記帳雲系統_軟體規格書_v1.7.md',
   });
@@ -247,6 +255,7 @@ app.use('/', booksRoutes);
 app.use('/', lookupsRoutes);
 app.use('/', journalsRoutes);
 app.use('/', reportsRoutes);
+app.use('/', postingRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not found', path: req.path });

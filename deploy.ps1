@@ -1,14 +1,12 @@
 # deploy.ps1
-# 把本機 bookkeeping-cloud 改動推到遠端 10.0.1.168 並 restart container.
+# Push local bookkeeping-cloud changes to remote 10.0.1.168 and restart container.
 #
-# 用法:
-#   ./deploy.ps1               # 推自 HEAD 以來的 working-tree 改動 (推薦)
-#   ./deploy.ps1 -All          # 推所有 tracked 檔案 (force sync, 例如新 deploy 主機)
-#   ./deploy.ps1 -Since HEAD~3 # 推某個 ref 之後的改動
+# Usage:
+#   ./deploy.ps1       # push modified + untracked files (recommended)
+#   ./deploy.ps1 -All  # push all tracked files (force sync, e.g. for new host)
 
 param(
-  [switch]$All,
-  [string]$Since = "HEAD"
+  [switch]$All
 )
 
 $REMOTE = "nester@10.0.1.168"
@@ -19,28 +17,32 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "=== bookkeeping-cloud deploy ===" -ForegroundColor Cyan
 
-# 1. 列出要推的檔案
+# 1. list files to push
 if ($All) {
   $files = git -C $LOCAL_DIR ls-files
   Write-Host "Mode: All tracked files (force sync)"
 } else {
-  $files = git -C $LOCAL_DIR diff --name-only $Since
-  if (-not $files) {
-    Write-Host "No diff vs $Since. Nothing to deploy." -ForegroundColor Yellow
-    Write-Host "(Try -All to force-sync all files, or check 'git status')"
+  # Modified vs HEAD + untracked (but not gitignored)
+  $modified = git -C $LOCAL_DIR diff --name-only HEAD
+  $untracked = git -C $LOCAL_DIR ls-files --others --exclude-standard
+  $files = @()
+  if ($modified) { $files += $modified }
+  if ($untracked) { $files += $untracked }
+  $files = $files | Where-Object { $_ -and ($_ -notmatch '^(node_modules|data|\.env$|.*\.log)') }
+  $files = $files | Sort-Object -Unique
+  if (($files | Measure-Object).Count -eq 0) {
+    Write-Host "No modified or untracked files. Nothing to deploy." -ForegroundColor Yellow
     exit 0
   }
-  Write-Host "Mode: diff since $Since"
+  Write-Host "Mode: diff HEAD + untracked"
 }
 
-# 過濾 ignored 模式 (保險: git diff 通常不會回這些)
-$files = $files | Where-Object { $_ -notmatch '^(node_modules|data|\.env$|.*\.log)' }
-
-Write-Host "Files to deploy ($(($files | Measure-Object).Count)):"
+$fileCount = ($files | Measure-Object).Count
+Write-Host "Files to deploy ($fileCount):"
 $files | ForEach-Object { Write-Host "  $_" }
 Write-Host ""
 
-# 2. 收集需要建的遠端子資料夾, 一次性建好
+# 2. collect remote dirs to mkdir
 $remoteDirs = @{}
 foreach ($f in $files) {
   $rel = $f.Replace('\', '/')
@@ -51,16 +53,16 @@ foreach ($d in $remoteDirs.Keys) {
   ssh $REMOTE "mkdir -p $REMOTE_DIR/$d" 2>$null
 }
 
-# 3. scp 各檔
+# 3. scp each file ($dest uses different name from $REMOTE to avoid case-insensitive clash)
 foreach ($f in $files) {
   $local = Join-Path $LOCAL_DIR $f
   if (-not (Test-Path $local)) {
     Write-Host "  SKIP (not found): $f" -ForegroundColor Yellow
     continue
   }
-  $remote = "${REMOTE}:${REMOTE_DIR}/$($f.Replace('\','/'))"
+  $dest = "${REMOTE}:${REMOTE_DIR}/$($f.Replace('\','/'))"
   Write-Host "  scp $f"
-  scp -q $local $remote
+  scp -q $local $dest
 }
 
 # 4. restart container
@@ -76,9 +78,11 @@ $health = curl.exe -s -m 10 http://10.0.1.168:3001/health
 Write-Host $health
 
 if ($health -match '"status":"ok"') {
-  Write-Host "`n[OK] Deploy successful." -ForegroundColor Green
+  Write-Host ""
+  Write-Host "[OK] Deploy successful." -ForegroundColor Green
 } else {
-  Write-Host "`n[WARN] Health check did not return ok. Check logs:" -ForegroundColor Red
+  Write-Host ""
+  Write-Host "[WARN] Health check did not return ok. Check logs:" -ForegroundColor Red
   Write-Host "  ssh $REMOTE 'docker logs bookkeeping-cloud-app 2>&1 | tail -20'"
   exit 1
 }

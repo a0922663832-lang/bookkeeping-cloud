@@ -12,7 +12,11 @@ const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-router.use(requireAuth);
+// auth required EXCEPT /internal/* (webhook endpoints use X-Posting-Token instead)
+router.use((req, res, next) => {
+  if (req.url.includes('/internal/')) return next();
+  return requireAuth(req, res, next);
+});
 
 async function loadBookMiddleware(req, res, next) {
   const code = (req.params.bookCode || '').toUpperCase();

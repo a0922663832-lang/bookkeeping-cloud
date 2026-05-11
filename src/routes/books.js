@@ -21,7 +21,11 @@ const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-router.use(requireAuth); // 所有 book routes 都要登入
+// auth required EXCEPT /internal/* (webhook endpoints use X-Posting-Token instead)
+router.use((req, res, next) => {
+  if (req.url.includes('/internal/')) return next();
+  return requireAuth(req, res, next);
+});
 
 // ── helper: load book by code + check membership ─────────────────────
 async function loadBookMiddleware(req, res, next) {

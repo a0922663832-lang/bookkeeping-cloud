@@ -13,7 +13,11 @@ const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-router.use(requireAuth);
+// auth required EXCEPT /internal/* (webhook endpoints use X-Posting-Token instead)
+router.use((req, res, next) => {
+  if (req.url.includes('/internal/')) return next();
+  return requireAuth(req, res, next);
+});
 
 const VALID_ACCOUNT_TYPES = [
   'cash', 'bank', 'digital_bank', 'time_deposit', 'investment',
