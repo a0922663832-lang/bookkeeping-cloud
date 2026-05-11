@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: bookkeeping-cloud-app
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgres://nest:${POSTGRES_PASSWORD:-nestpass}@postgres:5432/bookkeeping
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_me_64chars_minimum_aaaaaaaaaaaaaaaaaaaaaaa}
+      PORT: 3001
+      NODE_ENV: ${NODE_ENV:-development}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-changeme}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: bookkeeping-cloud-postgres
+    environment:
+      POSTGRES_USER: nest
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nestpass}
+      POSTGRES_DB: bookkeeping
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nest -d bookkeeping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: bookkeeping-cloud-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
