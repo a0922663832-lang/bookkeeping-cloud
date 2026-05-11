@@ -19,7 +19,9 @@ function generate() {
 }
 
 function isValidFormat(s) {
-  return typeof s === 'string' && s.length === LENGTH && /^[A-Z2-9]+$/.test(s);
+  // 寬鬆驗證: 接受所有 A-Z 0-9 (含混淆字元 0/1/O/I/L), 因為 seed 或外部資料可能含這些.
+  // generate() 仍嚴格用 CHARS (不含混淆字元), 所以新建 bookCode 一定漂亮.
+  return typeof s === 'string' && s.length === LENGTH && /^[A-Z0-9]+$/.test(s);
 }
 
 module.exports = { generate, isValidFormat, CHARS, LENGTH };
