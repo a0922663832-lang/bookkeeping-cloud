@@ -29,7 +29,7 @@ const reportsRoutes = require('./routes/reports');
 const postingRoutes = require('./routes/posting');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 // ── Redis ──────────────────────────────────────────────────────────
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379', {
@@ -188,7 +188,11 @@ async function backfillDefaults(pool) {
 const app = express();
 app.use(helmet());
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+// raw body kept on req.rawBody for HMAC signature verification of webhooks
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); },
+}));
 
 app.get('/health', async (req, res) => {
   const status = { status: 'ok', db: 'unknown', redis: 'unknown', version: VERSION };

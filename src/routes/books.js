@@ -143,12 +143,14 @@ router.patch(
   asyncHandler(async (req, res) => {
     const updates = [];
     const params = [];
-    const allowed = ['name', 'company_name', 'tax_id', 'currency', 'fiscal_year_start_month'];
+    const allowed = ['name', 'company_name', 'tax_id', 'currency', 'fiscal_year_start_month', 'posting_mode'];
     for (const field of allowed) {
-      if (req.body[field] !== undefined) {
-        updates.push(`${field} = $${params.length + 1}`);
-        params.push(req.body[field]);
+      if (req.body[field] === undefined) continue;
+      if (field === 'posting_mode' && !['auto', 'review', 'manual'].includes(req.body[field])) {
+        return res.status(400).json({ error: 'posting_mode must be auto / review / manual' });
       }
+      updates.push(`${field} = $${params.length + 1}`);
+      params.push(req.body[field]);
     }
     if (updates.length === 0) {
       return res.status(400).json({ error: 'no updatable fields' });

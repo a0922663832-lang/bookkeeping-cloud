@@ -255,6 +255,118 @@ router.get('/B/:bookCode/journals/:id', loadBook, asyncHandler(async (req, res) 
   res.json({ journal: result.rows[0] });
 }));
 
+// ── DELETE /B/:bookCode/journals/:id ───────────────────────────────────
+// Soft delete via reverse: not a hard DELETE on the row. Instead create a
+// new journal_log with opposite direction (type swapped, accounts swapped,
+// reclassify subjects swapped) and link via reverses_id / reversed_by_id.
+// Account balances are auto-rolled-back. Original row stays for audit.
+router.delete(
+  '/B/:bookCode/journals/:id',
+  loadBook,
+  requireBookRole('owner', 'admin'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+
+    const result = await withTransaction(async (client) => {
+      const origRes = await client.query(
+        `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
+        [id, req.book.id]
+      );
+      if (origRes.rows.length === 0) {
+        throw Object.assign(new Error('journal not found'), { status: 404 });
+      }
+      const o = origRes.rows[0];
+      if (o.reversed_by_id) {
+        throw Object.assign(
+          new Error(`journal #${o.id} already reversed by #${o.reversed_by_id}`),
+          { status: 409 }
+        );
+      }
+      if (o.reverses_id) {
+        throw Object.assign(
+          new Error(`journal #${o.id} is itself a reverse of #${o.reverses_id}, cannot re-reverse`),
+          { status: 400 }
+        );
+      }
+
+      // 計算反向 fields
+      let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
+      if (o.type === 'expense') {
+        reverseType = 'income';
+        outAcc = null;
+        inAcc = o.transfer_out_account_id;
+        fromSubject = null;
+        newSubjectId = o.subject_id;
+      } else if (o.type === 'income') {
+        reverseType = 'expense';
+        outAcc = o.transfer_in_account_id;
+        inAcc = null;
+        fromSubject = null;
+        newSubjectId = o.subject_id;
+      } else if (o.type === 'transfer') {
+        reverseType = 'transfer';
+        outAcc = o.transfer_in_account_id;
+        inAcc = o.transfer_out_account_id;
+        fromSubject = null;
+        newSubjectId = o.subject_id;
+      } else if (o.type === 'reclassify') {
+        reverseType = 'reclassify';
+        outAcc = null;
+        inAcc = null;
+        fromSubject = o.subject_id;          // 原 target 變新 from
+        newSubjectId = o.reclassify_from_subject_id;  // 原 from 變新 target
+      }
+
+      const ins = await client.query(
+        `INSERT INTO journal_logs (
+           book_id, date, type, amount,
+           subject_id, reclassify_from_subject_id,
+           transfer_out_account_id, transfer_in_account_id,
+           counterparty_id, summary, note,
+           reverses_id, created_by, updated_by
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+         RETURNING *`,
+        [
+          req.book.id, req.body.date || o.date, reverseType, o.amount,
+          newSubjectId, fromSubject,
+          outAcc, inAcc,
+          o.counterparty_id, req.body.summary || `Reverse of #${o.id}`, req.body.note || null,
+          o.id, req.user.id,
+        ]
+      );
+      const reverse = ins.rows[0];
+
+      // 反向 balance update
+      const amt = Number(o.amount);
+      if (reverseType === 'expense' || reverseType === 'transfer') {
+        await client.query(
+          `UPDATE ag_accounts SET current_balance = current_balance - $1, updated_at = NOW()
+            WHERE id = $2 AND book_id = $3`,
+          [amt, outAcc, req.book.id]
+        );
+      }
+      if (reverseType === 'income' || reverseType === 'transfer') {
+        await client.query(
+          `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
+            WHERE id = $2 AND book_id = $3`,
+          [amt, inAcc, req.book.id]
+        );
+      }
+
+      // 標原 journal reversed
+      await client.query(
+        `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
+        [reverse.id, o.id]
+      );
+
+      return { original_id: o.id, reverse_journal: reverse };
+    });
+
+    res.json({ ok: true, ...result });
+  })
+);
+
 module.exports = router;
 
 // 統一錯誤導向 (status 從 error.status 拿)
