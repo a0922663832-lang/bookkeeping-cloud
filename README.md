@@ -115,12 +115,58 @@ curl -X POST http://localhost:3001/books `
 
 - [x] M0 階段 1 — repo 骨架 + container 環境 + 第一個 migration
 - [x] M0 階段 2 — register / login + book CRUD + members
-- [ ] M0 階段 3 — deploy 到 10.0.1.168
-- [ ] M1 — 核心引擎（ag_accounts / subjects / counterparties / journal_logs）
-- [ ] M2 — 報表 / 儀表板
+- [x] M0 階段 3 — deploy 到 10.0.1.168 + deploy.ps1 自動化 + production JWT secret（HTTPS 留販售前再做）
+- [x] M1 — 核心引擎（ag_accounts / subjects / counterparties / journal_logs + CRUD）
+- [x] M2 — 報表 / 儀表板（dashboard / monthly / yearly / counterparties）
 - [ ] M3 — webhook 接收 + Pending Review
 - [ ] M4 — 進貨系統 v2 升級對接
 - [ ] M5 — POS 對接
 - [ ] M6 — INLINE 訂金對接
 - [ ] M7 — HR 薪資對接
 - [ ] M8 — 電子發票 / 第三方支付擴充
+
+---
+
+## Deploy
+
+每次本機改完 code，跑：
+
+```powershell
+.\deploy.ps1
+```
+
+會自動 scp 自 HEAD 之後改過的檔案 + restart container + 跑 /health。Force 同步用 `.\deploy.ps1 -All`。
+
+## Production 部署
+
+### 改 JWT_SECRET 為亂數
+
+第一次部署用 `.env` 內 default 即可，但要正式販售前把 JWT_SECRET 改亂數：
+
+```powershell
+$jwt = -join ((1..64) | ForEach-Object { "0123456789abcdef"[(Get-Random -Maximum 16)] })
+$envContent = "POSTGRES_PASSWORD=nestpass`nJWT_SECRET=$jwt`nINITIAL_ADMIN_PASSWORD=changeme`nNODE_ENV=development"
+$envContent | Out-File -FilePath "$env:TEMP\bk-env" -Encoding ASCII -NoNewline
+scp "$env:TEMP\bk-env" "nester@10.0.1.168:/root/bookkeeping-cloud/.env"
+ssh nester@10.0.1.168 "docker restart bookkeeping-cloud-app"
+Remove-Item "$env:TEMP\bk-env"
+```
+
+注意：改 JWT_SECRET 會讓所有既有 login token 失效，要重新登入。
+
+POSTGRES_PASSWORD 改較複雜（要同步改 PG 內的 user password），內網自家用先保留 nestpass，販售前再嚴密化。
+
+### HTTPS 設定（販售前再做）
+
+目前內網 10.0.1.168:3001 走 HTTP 即可。販售給其他餐廳前要設 HTTPS：
+
+1. 註冊一個域名（如 `bookkeeping.example.com`）
+2. DNS A 紀錄指向部署主機 IP
+3. 在 1Panel 介面 →「網站」→「新增反向代理」：
+   - 域名：`bookkeeping.example.com`
+   - 代理至：`http://localhost:3001`
+   - 啟用 Let's Encrypt SSL（自動申請 + 續約）
+   - 開「強制 HTTPS」
+4. 從外網用 `https://bookkeeping.example.com` 即可
+
+注意：販售上線前還要把 `src/server.js` 內 `app.use(cors())` 設 origin 白名單（目前是接受所有來源）。
