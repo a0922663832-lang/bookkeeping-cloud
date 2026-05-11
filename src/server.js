@@ -1,12 +1,13 @@
 // src/server.js
-// Bookkeeping cloud · Express entry · M1 stage 1a
+// Bookkeeping cloud · Express entry · M1 stage 1b
 //
 // 啟動順序:
 //   1. 連 PostgreSQL pool
 //   2. 跑 migrations
-//   3. seed admin user + 第一本帳本 + 預設科目/帳戶 (僅首次啟動)
-//   4. 連 Redis
-//   5. 起 Express on PORT
+//   3. seed admin user + 第一本帳本 (僅首次啟動)
+//   4. backfillDefaults: 每次啟動補缺的預設 subjects/accounts (idempotent)
+//   5. 連 Redis
+//   6. 起 Express on PORT
 
 'use strict';
 
@@ -26,7 +27,7 @@ const journalsRoutes = require('./routes/journals');
 const lookupsRoutes = require('./routes/lookups');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 // ── Redis ──────────────────────────────────────────────────────────
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379', {
@@ -36,17 +37,15 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379', {
 });
 redis.on('error', (err) => console.error('[redis] error:', err.message));
 
-// ── Default subjects (規格書 §A.1 + LEO 拍板 4191 銷售折讓) ────────
-// 餐飲業常用,LEO 可後續自加.
+// ── Default subjects (規格書 §A.1 + LEO 拍板 4191 銷售折讓 + 7301 內部轉帳 for transfer) ──
 const DEFAULT_SUBJECTS = [
   // t1 收入
   { code: '4101', name: '營業收入', parent_type: 't1', display_order: 10 },
   { code: '4109', name: '服務費收入', parent_type: 't1', display_order: 20 },
-  { code: '4191', name: '銷售折讓', parent_type: 't1', display_order: 30 }, // LEO 拍板 (沖收入)
+  { code: '4191', name: '銷售折讓', parent_type: 't1', display_order: 30 },
   { code: '4197', name: '銷貨退回(前期)', parent_type: 't1', display_order: 40 },
   { code: '4198', name: '違約金收入', parent_type: 't1', display_order: 50 },
   { code: '4408', name: '訂金收入', parent_type: 't1', display_order: 60 },
-
   // t2 成本
   { code: '5101', name: '食材-肉品', parent_type: 't2', display_order: 110 },
   { code: '5102', name: '食材-海鮮', parent_type: 't2', display_order: 120 },
@@ -55,7 +54,6 @@ const DEFAULT_SUBJECTS = [
   { code: '5105', name: '食材-調味料', parent_type: 't2', display_order: 150 },
   { code: '5106', name: '食材-其他', parent_type: 't2', display_order: 160 },
   { code: '5197', name: '銷貨退回(沖銷)', parent_type: 't2', display_order: 170 },
-
   // t3 費用
   { code: '6101', name: '房租', parent_type: 't3', display_order: 210 },
   { code: '6201', name: '水電瓦斯', parent_type: 't3', display_order: 220 },
@@ -66,13 +64,13 @@ const DEFAULT_SUBJECTS = [
   { code: '6801', name: '員工薪資', parent_type: 't3', display_order: 270 },
   { code: '6802', name: '勞健保', parent_type: 't3', display_order: 280 },
   { code: '6901', name: '其他費用', parent_type: 't3', display_order: 290 },
-
+  // t4 轉帳 (M1 stage 1b 新增,讓 transfer 有正確 subject)
+  { code: '7301', name: '內部轉帳', parent_type: 't4', display_order: 410 },
   // t5 股東權益
   { code: '7101', name: '股東出資', parent_type: 't5', display_order: 510 },
   { code: '7102', name: '股東提款', parent_type: 't5', display_order: 520 },
 ];
 
-// ── Default ag_accounts (現金袋 / 玉山銀行 / INLINE 待撥 / 應付帳款-臨時) ──
 const DEFAULT_ACCOUNTS = [
   { name: '現金袋', type: 'cash', display_order: 10 },
   { name: '玉山銀行', type: 'bank', display_order: 20 },
@@ -80,31 +78,49 @@ const DEFAULT_ACCOUNTS = [
   { name: '應付帳款-臨時', type: 'liability', display_order: 40 },
 ];
 
-async function seedDefaultsForBook(client, bookId) {
-  for (const s of DEFAULT_SUBJECTS) {
-    await client.query(
-      `INSERT INTO subjects (book_id, code, name, parent_type, display_order)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT DO NOTHING`,
-      [bookId, s.code, s.name, s.parent_type, s.display_order]
-    );
-  }
-  for (const a of DEFAULT_ACCOUNTS) {
-    await client.query(
-      `INSERT INTO ag_accounts (book_id, name, type, display_order)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT DO NOTHING`,
-      [bookId, a.name, a.type, a.display_order]
-    );
-  }
-  console.log(`[seed] inserted ${DEFAULT_SUBJECTS.length} subjects and ${DEFAULT_ACCOUNTS.length} accounts for book ${bookId}`);
+async function ensureSubject(client, bookId, s) {
+  const exists = await client.query(
+    `SELECT 1 FROM subjects WHERE book_id = $1 AND code = $2`,
+    [bookId, s.code]
+  );
+  if (exists.rows.length > 0) return false;
+  await client.query(
+    `INSERT INTO subjects (book_id, code, name, parent_type, display_order)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [bookId, s.code, s.name, s.parent_type, s.display_order]
+  );
+  return true;
 }
 
-// ── Seed (首次啟動建 admin + 第一本帳本 + 預設資料) ────────────────
+async function ensureAccount(client, bookId, a) {
+  const exists = await client.query(
+    `SELECT 1 FROM ag_accounts WHERE book_id = $1 AND name = $2`,
+    [bookId, a.name]
+  );
+  if (exists.rows.length > 0) return false;
+  await client.query(
+    `INSERT INTO ag_accounts (book_id, name, type, display_order)
+     VALUES ($1, $2, $3, $4)`,
+    [bookId, a.name, a.type, a.display_order]
+  );
+  return true;
+}
+
+async function seedDefaultsForBook(client, bookId) {
+  let added = 0;
+  for (const s of DEFAULT_SUBJECTS) {
+    if (await ensureSubject(client, bookId, s)) added++;
+  }
+  for (const a of DEFAULT_ACCOUNTS) {
+    if (await ensureAccount(client, bookId, a)) added++;
+  }
+  console.log(`[seed] book ${bookId}: inserted ${added} new defaults`);
+}
+
 async function seedAdmin(pool) {
   const existing = await pool.query('SELECT COUNT(*) FROM users');
   if (parseInt(existing.rows[0].count, 10) > 0) {
-    console.log('[seed] users already exist, skipping');
+    console.log('[seed] users already exist, skipping admin/first-book creation');
     return;
   }
   const email = 'a0922663832@gmail.com';
@@ -115,8 +131,7 @@ async function seedAdmin(pool) {
   try {
     await client.query('BEGIN');
     const userRes = await client.query(
-      `INSERT INTO users (email, password_hash, name)
-       VALUES ($1, $2, $3) RETURNING id`,
+      `INSERT INTO users (email, password_hash, name) VALUES ($1, $2, $3) RETURNING id`,
       [email, hash, 'LEO']
     );
     const userId = userRes.rows[0].id;
@@ -148,27 +163,21 @@ async function seedAdmin(pool) {
   }
 }
 
-// 補:對既有 book seed 預設資料 (給 M0 已建好的 book 補 M1 階段 1a 的 subjects/accounts).
-async function backfillExistingBooks(pool) {
+// 每次啟動都跑: 對所有 book 補缺的預設 subjects/accounts.
+// Idempotent: 既有的 skip, 缺的補. 用於部署新版時自動補上 DEFAULT_* 新增項.
+async function backfillDefaults(pool) {
   const books = await pool.query('SELECT id FROM books');
   for (const row of books.rows) {
-    const subjectCount = await pool.query(
-      'SELECT COUNT(*) FROM subjects WHERE book_id = $1',
-      [row.id]
-    );
-    if (parseInt(subjectCount.rows[0].count, 10) === 0) {
-      console.log(`[backfill] book ${row.id} has no subjects, seeding defaults`);
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await seedDefaultsForBook(client, row.id);
-        await client.query('COMMIT');
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-      } finally {
-        client.release();
-      }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await seedDefaultsForBook(client, row.id);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error(`[backfill] book ${row.id} failed:`, e.message);
+    } finally {
+      client.release();
     }
   }
 }
@@ -196,25 +205,29 @@ app.get('/', (req, res) => {
   res.json({
     name: 'bookkeeping-cloud',
     version: VERSION,
-    stage: 'M1 stage 1a',
+    stage: 'M1 stage 1b',
     endpoints: {
       health: 'GET /health',
       auth: ['POST /auth/register', 'POST /auth/login', 'GET /auth/me', 'POST /auth/change-password'],
       books: ['GET /books', 'POST /books', 'GET /B/:bookCode', 'PATCH /B/:bookCode'],
       members: [
-        'GET /B/:bookCode/members',
-        'POST /B/:bookCode/members',
-        'PATCH /B/:bookCode/members/:userId',
-        'DELETE /B/:bookCode/members/:userId',
+        'GET /B/:bookCode/members', 'POST /B/:bookCode/members',
+        'PATCH /B/:bookCode/members/:userId', 'DELETE /B/:bookCode/members/:userId',
       ],
-      lookups: [
-        'GET /B/:bookCode/subjects',
-        'GET /B/:bookCode/accounts',
-        'GET /B/:bookCode/counterparties',
+      subjects: [
+        'GET /B/:bookCode/subjects', 'POST /B/:bookCode/subjects',
+        'PATCH /B/:bookCode/subjects/:id',
+      ],
+      accounts: [
+        'GET /B/:bookCode/accounts', 'POST /B/:bookCode/accounts',
+        'PATCH /B/:bookCode/accounts/:id',
+      ],
+      counterparties: [
+        'GET /B/:bookCode/counterparties', 'POST /B/:bookCode/counterparties',
+        'PATCH /B/:bookCode/counterparties/:id',
       ],
       journals: [
-        'POST /B/:bookCode/journals',
-        'GET /B/:bookCode/journals',
+        'POST /B/:bookCode/journals', 'GET /B/:bookCode/journals',
         'GET /B/:bookCode/journals/:id',
       ],
     },
@@ -238,22 +251,19 @@ app.use((err, req, res, next) => {
   if (err.status) return res.status(err.status).json({ error: err.message });
   if (err.code === '23505') return res.status(409).json({ error: 'conflict (unique constraint)', detail: err.detail });
   if (err.code === '23503') return res.status(400).json({ error: 'foreign key violation', detail: err.detail });
-  if (err.code === '23514') return res.status(400).json({ error: 'check constraint failed (likely invalid type/field combo)', detail: err.detail });
+  if (err.code === '23514') return res.status(400).json({ error: 'check constraint failed', detail: err.detail });
   res.status(500).json({ error: err.message || 'internal server error' });
 });
 
-// ── Startup ────────────────────────────────────────────────────────
 async function start() {
   const pool = getPool();
   try {
     await runMigrations(pool);
     await seedAdmin(pool);
-    await backfillExistingBooks(pool);
+    await backfillDefaults(pool);
     await redis.connect();
     app.listen(PORT, () => {
       console.log(`[server] bookkeeping cloud v${VERSION} listening on port ${PORT}`);
-      console.log(`[server] try: curl http://localhost:${PORT}/health`);
-      console.log(`[server] try: curl http://localhost:${PORT}/`);
     });
   } catch (e) {
     console.error('[server] failed to start:', e);
