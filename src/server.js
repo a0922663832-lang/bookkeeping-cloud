@@ -28,8 +28,11 @@ const lookupsRoutes = require('./routes/lookups');
 const reportsRoutes = require('./routes/reports');
 const postingRoutes = require('./routes/posting');
 
+const path = require('path');
+
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // ── Redis ──────────────────────────────────────────────────────────
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379', {
@@ -186,7 +189,9 @@ async function backfillDefaults(pool) {
 
 // ── Express ────────────────────────────────────────────────────────
 const app = express();
-app.use(helmet());
+// CSP disabled (Phase A): allow Bootstrap/jQuery/Chart.js CDN + inline <style>/<script>.
+// Tighten before commercial launch (whitelist cdn.jsdelivr.net etc).
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 // raw body kept on req.rawBody for HMAC signature verification of webhooks
 app.use(express.json({
@@ -207,11 +212,12 @@ app.get('/health', async (req, res) => {
   res.status(status.status === 'ok' ? 200 : 503).json(status);
 });
 
-app.get('/', (req, res) => {
+// API info (was at /). Now / serves login page; this is the machine-readable index.
+app.get('/api-info', (req, res) => {
   res.json({
     name: 'bookkeeping-cloud',
     version: VERSION,
-    stage: 'M1 stage 1b',
+    stage: 'Phase A: web UI (login + dashboard + pending review)',
     endpoints: {
       health: 'GET /health',
       auth: ['POST /auth/register', 'POST /auth/login', 'GET /auth/me', 'POST /auth/change-password'],
@@ -253,6 +259,12 @@ app.get('/', (req, res) => {
     docs: 'see ../Money/公司記帳雲系統_軟體規格書_v1.7.md',
   });
 });
+
+// ── Phase A static UI pages ────────────────────────────────────────
+app.get('/', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/dashboard', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
+app.get('/pending', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pending.html')));
+// future Phase B/C/D/E pages will go in PUBLIC_DIR
 
 app.use('/auth', authRoutes);
 app.use('/', booksRoutes);

@@ -21,6 +21,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./migrations:/app/migrations
+      - ./public:/app/public
     restart: unless-stopped
 
   postgres:

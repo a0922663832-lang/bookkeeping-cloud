@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 待審入帳</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.card-list{background:#fff;border-radius:14px;padding:8px 22px;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.pj-row{padding:18px 0;border-bottom:1px solid #f0ece4}
+.pj-row:last-child{border-bottom:0}
+.type-badge{padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600}
+.type-income{background:#eaf5f2;color:#1a6a5a}
+.type-expense{background:#fdf0ea;color:#bf4a18}
+.type-transfer{background:#eaf0fa;color:#1a4a8a}
+.type-reclassify{background:#f3eafa;color:#6a3a8a}
+.amount-display{font-size:22px;font-weight:700;color:#1a1814}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.todo-link{color:#888;font-size:13px;text-decoration:none;cursor:not-allowed}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link active" href="/pending">待審</a>
+      <span class="nav-link todo-link" title="Phase B 後續開放">記一筆</span>
+      <span class="nav-link todo-link" title="Phase B 後續開放">明細</span>
+      <span class="nav-link todo-link" title="Phase C 後續開放">報表</span>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0">待審入帳</h4>
+    <div class="btn-group btn-group-sm" role="group" id="filterBtns">
+      <button type="button" class="btn btn-primary" data-filter="pending">待審</button>
+      <button type="button" class="btn btn-outline-secondary" data-filter="approved">已核准</button>
+      <button type="button" class="btn btn-outline-secondary" data-filter="auto_posted">自動入帳</button>
+      <button type="button" class="btn btn-outline-secondary" data-filter="rejected">已退回</button>
+      <button type="button" class="btn btn-outline-secondary" data-filter="all">全部</button>
+    </div>
+  </div>
+  <div class="card-list">
+    <div id="list" class="text-center text-muted py-4">載入中...</div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault();
+  localStorage.clear();
+  location.href = '/';
+});
+
+const BOOK = 'NEST0001';
+let currentFilter = 'pending';
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, opts.headers || {});
+  const r = await fetch(path, opts);
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  return r.json();
+}
+
+function fmt(v) { return new Intl.NumberFormat('zh-TW').format(parseFloat(v || 0)); }
+function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類'})[t] || t; }
+function statusBadge(s) {
+  const map = {pending:'bg-warning text-dark', approved:'bg-success', auto_posted:'bg-info', rejected:'bg-secondary'};
+  const txt = {pending:'待審', approved:'已核准', auto_posted:'自動入帳', rejected:'已退回'};
+  return `<span class="badge ${map[s]||'bg-secondary'}">${txt[s]||s}</span>`;
+}
+
+async function load() {
+  document.getElementById('list').innerHTML = '<div class="text-center text-muted py-4">載入中...</div>';
+  try {
+    const r = await api(`/B/${BOOK}/pending-journals?status=${currentFilter}`);
+    if (r.count === 0) {
+      const emptyMsg = currentFilter === 'pending' ? '✓ 沒有待審項目' : '無資料';
+      document.getElementById('list').innerHTML = `<div class="text-center text-success py-4">${emptyMsg}</div>`;
+      return;
+    }
+    document.getElementById('list').innerHTML = r.pending_journals.map(p => {
+      const j = p.proposed_journal || {};
+      const canActions = p.status === 'pending';
+      return `<div class="pj-row" id="pj-${p.id}">
+        <div class="row align-items-center">
+          <div class="col-md-2">
+            <span class="type-badge type-${j.type}">${typeName(j.type)}</span>
+            <div class="amount-display mt-2">$${fmt(j.amount)}</div>
+          </div>
+          <div class="col-md-7">
+            <div class="mb-1">${statusBadge(p.status)}<span class="text-muted small ms-2">${j.date || '-'}</span></div>
+            <div><strong>${j.summary || '(無摘要)'}</strong></div>
+            <div class="small text-muted mt-1">來源:${p.external_source}:${p.external_id} ${p.reviewed_at ? '· 審核時間 ' + new Date(p.reviewed_at).toLocaleString('zh-TW') : ''}</div>
+            ${p.review_note ? `<div class="small text-muted">備註: ${p.review_note}</div>` : ''}
+          </div>
+          <div class="col-md-3 text-end">
+            ${canActions ? `
+              <button class="btn btn-success btn-sm me-1" onclick="approve(${p.id})">✓ 核准</button>
+              <button class="btn btn-outline-danger btn-sm" onclick="reject(${p.id})">✗ 退回</button>` : ''}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('list').innerHTML = '<div class="alert alert-danger">' + e.message + '</div>';
+  }
+}
+
+async function approve(id) {
+  const note = prompt('核准備註 (可空白):', '');
+  if (note === null) return;
+  try {
+    const r = await api(`/B/${BOOK}/pending-journals/${id}/approve`, { method: 'POST', body: JSON.stringify({ review_note: note || null }) });
+    if (r.error) { alert('失敗: ' + r.error); return; }
+    alert(`✓ 已核准, journal #${r.journal.id} 已寫入帳`);
+    load();
+  } catch (e) { alert('錯誤: ' + e.message); }
+}
+
+async function reject(id) {
+  const note = prompt('退回原因 (可空白):', '');
+  if (note === null) return;
+  try {
+    const r = await api(`/B/${BOOK}/pending-journals/${id}/reject`, { method: 'POST', body: JSON.stringify({ review_note: note || null }) });
+    if (r.error) { alert('失敗: ' + r.error); return; }
+    alert('✗ 已退回');
+    load();
+  } catch (e) { alert('錯誤: ' + e.message); }
+}
+
+document.querySelectorAll('#filterBtns [data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentFilter = btn.dataset.filter;
+    document.querySelectorAll('#filterBtns [data-filter]').forEach(b => {
+      b.classList.remove('btn-primary');
+      b.classList.add('btn-outline-secondary');
+    });
+    btn.classList.add('btn-primary');
+    btn.classList.remove('btn-outline-secondary');
+    load();
+  });
+});
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 儀表板</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.kpi-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}
+.kpi-label{font-size:13px;color:#888;margin-bottom:8px}
+.kpi-value{font-size:28px;font-weight:700;color:#1a1814}
+.kpi-value.pos{color:#1a6a5a}
+.kpi-value.neg{color:#c4453a}
+.section-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.05);margin-top:20px}
+.acct-row{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid #f0ece4}
+.acct-row:last-child{border-bottom:0}
+.acct-type-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;background:#f3eafa;color:#6a3a8a;margin-left:6px}
+.todo-link{color:#888;font-size:13px;text-decoration:none}
+.todo-link:hover{color:#6a3a8a}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link active" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
+      <span class="nav-link todo-link" title="Phase B 後續開放" style="cursor:not-allowed">記一筆</span>
+      <span class="nav-link todo-link" title="Phase B 後續開放" style="cursor:not-allowed">明細</span>
+      <span class="nav-link todo-link" title="Phase C 後續開放" style="cursor:not-allowed">報表</span>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div id="loading" class="text-center text-muted py-5">載入中...</div>
+  <div id="content" class="d-none">
+    <h4 class="mb-3" id="monthLabel">本月概覽</h4>
+
+    <div class="row g-3">
+      <div class="col-md-3"><div class="kpi-card">
+        <div class="kpi-label">本月收入</div>
+        <div class="kpi-value pos" id="kpiIncome">—</div>
+      </div></div>
+      <div class="col-md-3"><div class="kpi-card">
+        <div class="kpi-label">本月支出</div>
+        <div class="kpi-value neg" id="kpiExpense">—</div>
+      </div></div>
+      <div class="col-md-3"><div class="kpi-card">
+        <div class="kpi-label">本月利潤</div>
+        <div class="kpi-value" id="kpiProfit">—</div>
+      </div></div>
+      <div class="col-md-3"><div class="kpi-card">
+        <div class="kpi-label">總帳戶餘額</div>
+        <div class="kpi-value" id="kpiBalance">—</div>
+      </div></div>
+    </div>
+
+    <div class="section-card">
+      <h6 class="mb-3">近 6 月趨勢</h6>
+      <canvas id="trendChart" height="90"></canvas>
+    </div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-md-7"><div class="section-card mt-0">
+        <h6 class="mb-3">資金帳戶餘額</h6>
+        <div id="accountsList"></div>
+      </div></div>
+      <div class="col-md-5"><div class="section-card mt-0">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="mb-0">待審入帳</h6>
+          <a href="/pending" class="btn btn-sm btn-outline-primary">前往審核 →</a>
+        </div>
+        <div id="pendingList" class="small">載入中...</div>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault();
+  localStorage.clear();
+  location.href = '/';
+});
+
+async function api(path) {
+  const r = await fetch(path, { headers: { Authorization: 'Bearer ' + token } });
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  return r.json();
+}
+
+const BOOK = 'NEST0001';
+
+function fmt(v) { return new Intl.NumberFormat('zh-TW').format(parseFloat(v || 0)); }
+function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類'})[t] || t; }
+
+(async () => {
+  try {
+    const [d, pj] = await Promise.all([
+      api(`/B/${BOOK}/reports/dashboard`),
+      api(`/B/${BOOK}/pending-journals?status=pending`),
+    ]);
+    document.getElementById('monthLabel').textContent = `${d.month} 概覽`;
+    document.getElementById('kpiIncome').textContent = '$' + fmt(d.this_month.income);
+    document.getElementById('kpiExpense').textContent = '$' + fmt(d.this_month.expense);
+    const profit = parseFloat(d.this_month.profit);
+    const pE = document.getElementById('kpiProfit');
+    pE.textContent = '$' + fmt(profit);
+    pE.classList.add(profit >= 0 ? 'pos' : 'neg');
+    document.getElementById('kpiBalance').textContent = '$' + fmt(d.total_balance);
+
+    document.getElementById('accountsList').innerHTML = d.accounts.length
+      ? d.accounts.map(a => `<div class="acct-row"><span>${a.name}<span class="acct-type-badge">${a.type}</span></span><strong>$${fmt(a.current_balance)}</strong></div>`).join('')
+      : '<div class="text-muted small">尚無帳戶</div>';
+
+    const pBadge = document.getElementById('pendingBadge');
+    if (pj.count > 0) pBadge.innerHTML = ` <span class="badge bg-warning text-dark">${pj.count}</span>`;
+    document.getElementById('pendingList').innerHTML = pj.count
+      ? pj.pending_journals.slice(0, 4).map(p => {
+          const j = p.proposed_journal || {};
+          return `<div class="acct-row"><span><strong>${typeName(j.type)}</strong> $${fmt(j.amount)}<br><small class="text-muted">${p.external_source} · ${j.summary || ''}</small></span></div>`;
+        }).join('')
+      : '<div class="text-success">✓ 沒有待審項目</div>';
+
+    new Chart(document.getElementById('trendChart'), {
+      type: 'line',
+      data: {
+        labels: d.trend_6m.map(t => t.month),
+        datasets: [
+          { label: '收入', data: d.trend_6m.map(t => parseFloat(t.income)), borderColor: '#1a6a5a', backgroundColor: 'rgba(26,106,90,.1)', fill: true, tension: 0.3 },
+          { label: '支出', data: d.trend_6m.map(t => parseFloat(t.expense)), borderColor: '#c4453a', backgroundColor: 'rgba(196,69,58,.1)', fill: true, tension: 0.3 },
+          { label: '利潤', data: d.trend_6m.map(t => parseFloat(t.profit)), borderColor: '#6a3a8a', borderWidth: 2, tension: 0.3 },
+        ],
+      },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+    });
+
+    document.getElementById('loading').classList.add('d-none');
+    document.getElementById('content').classList.remove('d-none');
+  } catch (e) {
+    document.getElementById('loading').innerHTML = '<div class="alert alert-danger">載入失敗: ' + e.message + '</div>';
+  }
+})();
+</script>
+</body>
+</html>

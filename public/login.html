@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 登入</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.login-card{max-width:380px;margin:0 auto;padding:36px 32px;background:#fff;border-radius:14px;box-shadow:0 2px 24px rgba(0,0,0,.08)}
+.brand-icon{width:60px;height:60px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:14px;color:#fff;display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 18px}
+.brand-title{font-size:22px;font-weight:700;text-align:center;margin-bottom:4px}
+.brand-sub{font-size:13px;color:#888;text-align:center;margin-bottom:28px}
+.form-label{font-size:13px;font-weight:500}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.btn-primary:focus,.btn-primary:disabled{background:#6a3a8a;border-color:#6a3a8a}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="login-card">
+    <div class="brand-icon">📊</div>
+    <div class="brand-title">記帳雲</div>
+    <div class="brand-sub">公司記帳整合系統</div>
+    <div id="err" class="alert alert-danger d-none small" role="alert"></div>
+    <form id="loginForm">
+      <div class="mb-3">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-control" id="email" required value="a0922663832@gmail.com" autocomplete="email">
+      </div>
+      <div class="mb-4">
+        <label class="form-label">密碼</label>
+        <input type="password" class="form-control" id="password" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary w-100" id="submitBtn">登入</button>
+    </form>
+  </div>
+</div>
+<script>
+if (localStorage.getItem('token')) location.href = '/dashboard';
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const errBox = document.getElementById('err');
+  const btn = document.getElementById('submitBtn');
+  errBox.classList.add('d-none');
+  btn.disabled = true; btn.textContent = '登入中...';
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      errBox.textContent = data.error || '登入失敗';
+      errBox.classList.remove('d-none');
+      btn.disabled = false; btn.textContent = '登入';
+      return;
+    }
+    localStorage.setItem('token', data.token);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    location.href = '/dashboard';
+  } catch (err) {
+    errBox.textContent = '連線錯誤: ' + err.message;
+    errBox.classList.remove('d-none');
+    btn.disabled = false; btn.textContent = '登入';
+  }
+});
+</script>
+</body>
+</html>
