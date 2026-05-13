@@ -19,6 +19,14 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
 .type-expense{background:#fdf0ea;color:#bf4a18}
 .type-transfer{background:#eaf0fa;color:#1a4a8a}
 .type-reclassify{background:#f3eafa;color:#6a3a8a}
+.type-composite{background:#e8f1e0;color:#3a6a1a}
+.legs-table{font-size:12px;margin-top:8px;background:#faf9f5;border-radius:6px;padding:8px 12px}
+.legs-table th{font-weight:500;color:#888;padding:2px 8px 2px 0}
+.legs-table td{padding:2px 8px 2px 0;vertical-align:top}
+.leg-account{color:#1a4a8a}
+.leg-subject{color:#6a3a8a}
+.leg-amount-pos{color:#1a6a5a;font-weight:600}
+.leg-amount-neg{color:#bf4a18;font-weight:600}
 .amount-display{font-size:22px;font-weight:700;color:#1a1814}
 .btn-primary{background:#6a3a8a;border-color:#6a3a8a}
 .btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
@@ -84,7 +92,29 @@ async function api(path, opts) {
 }
 
 function fmt(v) { return new Intl.NumberFormat('zh-TW').format(parseFloat(v || 0)); }
-function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類'})[t] || t; }
+function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類',composite:'複式記帳'})[t] || t; }
+
+// M5 Phase 2: render composite journal legs 細項表
+function renderLegs(legs) {
+  if (!legs || legs.length === 0) return '';
+  const rows = legs.map(l => {
+    const amt = +l.amount;
+    const amtCls = amt < 0 ? 'leg-amount-neg' : 'leg-amount-pos';
+    const target = l.kind === 'subject'
+      ? `<span class="leg-subject">📊 ${l.subject_code || l.subject_id || '?'}</span>`
+      : `<span class="leg-account">🏦 ${l.account_ref || (l.account_id ? '#'+l.account_id : '?')}</span>`;
+    const noteCell = l.note ? `<span class="text-muted small">${l.note}</span>` : '';
+    return `<tr><td>${l.leg_no || ''}</td><td>${target}</td><td class="${amtCls} text-end">${amt >= 0 ? '+' : ''}$${fmt(Math.abs(amt))}</td><td>${noteCell}</td></tr>`;
+  }).join('');
+  // 算 balance gap
+  const accSum = legs.filter(l => l.kind === 'account').reduce((s, l) => s + (+l.amount || 0), 0);
+  const subSum = legs.filter(l => l.kind === 'subject').reduce((s, l) => s + (+l.amount || 0), 0);
+  const gap = accSum - subSum;
+  const gapMsg = Math.abs(gap) > 0.01
+    ? `<div class="small text-warning mt-1">⚠ balance gap: $${fmt(gap)} (D3 comp 場景容許)</div>`
+    : '';
+  return `<table class="legs-table mt-2"><thead><tr><th>#</th><th>對象</th><th class="text-end">金額</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table>${gapMsg}`;
+}
 function statusBadge(s) {
   const map = {pending:'bg-warning text-dark', approved:'bg-success', auto_posted:'bg-info', rejected:'bg-secondary'};
   const txt = {pending:'待審', approved:'已核准', auto_posted:'自動入帳', rejected:'已退回'};
@@ -103,6 +133,16 @@ async function load() {
     document.getElementById('list').innerHTML = r.pending_journals.map(p => {
       const j = p.proposed_journal || {};
       const canActions = p.status === 'pending';
+      const triggeredBy = (p.payload && (p.payload.triggered_by_emp_id || p.payload.triggered_by_external_emp_id)) || null;
+      const isComposite = j.type === 'composite';
+      const legs = j.legs || [];
+      const approverInfo = p.approved_by_name ? `· 核准: ${p.approved_by_name} @ ${new Date(p.approved_at).toLocaleString('zh-TW')}` : '';
+      const rejecterInfo = p.rejected_by_name ? `· 退回: ${p.rejected_by_name} @ ${new Date(p.rejected_at).toLocaleString('zh-TW')}` : '';
+      const rejReason = p.rejected_reason ? `<div class="small text-danger mt-1">退回原因: ${p.rejected_reason}</div>` : '';
+      const triggeredByLine = triggeredBy ? `<span class="badge bg-light text-dark ms-2" title="觸發此推送的員工 emp_id">👤 ${triggeredBy}</span>` : '';
+      const legsHtml = isComposite && legs.length > 0 ? renderLegs(legs) : '';
+      const eventTypeBadge = p.payload && p.payload.event_type ? `<span class="badge bg-secondary ms-1">${p.payload.event_type || ''}</span>` : '';
+
       return `<div class="pj-row" id="pj-${p.id}">
         <div class="row align-items-center">
           <div class="col-md-2">
@@ -110,15 +150,22 @@ async function load() {
             <div class="amount-display mt-2">$${fmt(j.amount)}</div>
           </div>
           <div class="col-md-7">
-            <div class="mb-1">${statusBadge(p.status)}<span class="text-muted small ms-2">${j.date || '-'}</span></div>
+            <div class="mb-1">${statusBadge(p.status)}<span class="text-muted small ms-2">${j.date || '-'}</span>${triggeredByLine}${eventTypeBadge}</div>
             <div><strong>${j.summary || '(無摘要)'}</strong></div>
-            <div class="small text-muted mt-1">來源:${p.external_source}:${p.external_id} ${p.reviewed_at ? '· 審核時間 ' + new Date(p.reviewed_at).toLocaleString('zh-TW') : ''}</div>
+            <div class="small text-muted mt-1">
+              來源: ${p.external_source}:${p.external_id}
+              ${p.reviewed_at ? '· 審核時間 ' + new Date(p.reviewed_at).toLocaleString('zh-TW') : ''}
+              ${approverInfo}${rejecterInfo}
+            </div>
             ${p.review_note ? `<div class="small text-muted">備註: ${p.review_note}</div>` : ''}
+            ${rejReason}
+            ${legsHtml}
           </div>
           <div class="col-md-3 text-end">
             ${canActions ? `
               <button class="btn btn-success btn-sm me-1" onclick="approve(${p.id})">✓ 核准</button>
               <button class="btn btn-outline-danger btn-sm" onclick="reject(${p.id})">✗ 退回</button>` : ''}
+            ${p.resulting_journal_id ? `<div class="small text-muted mt-2">journal #${p.resulting_journal_id}</div>` : ''}
           </div>
         </div>
       </div>`;
