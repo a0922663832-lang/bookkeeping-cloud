@@ -211,7 +211,7 @@ function render() {
   const canEdit = myRole === 'owner' || myRole === 'admin';
   if (!canEdit) {
     $('readOnlyBanner').classList.remove('d-none');
-    $('myRoleName').textContent = ({owner:'owner', admin:'admin', editor:'editor', viewer:'viewer'})[myRole] || myRole;
+    $('myRoleName').textContent = ({owner:'帳本擁有者 owner', admin:'管理員 admin', editor:'記帳員 editor', viewer:'唯讀 viewer'})[myRole] || myRole;
   }
   $('fCode').value = bookData.code || '';
   $('fName').value = bookData.name || '';

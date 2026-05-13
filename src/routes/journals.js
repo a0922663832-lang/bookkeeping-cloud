@@ -189,23 +189,27 @@ async function insertChildTargets(client, journalId, targets) {
 }
 
 // ── FK validation 用 helper（一次性 EXISTS 檢查） ──────────────────────
+// Bug B fix (2026-05-13): COUNT(DISTINCT id) 對比「去重後的 array length」，
+// 否則同一個 subject_id 多處引用 (reclassify 1:N 的 primary = targets[0]) 會誤報。
 async function validateFKs(client, bookId, opts) {
   const { subjectIds = [], accountIds = [], counterpartyId = null } = opts;
   if (subjectIds.length) {
+    const uniqSubjects = [...new Set(subjectIds.map(Number))];
     const r = await client.query(
-      `SELECT COUNT(*)::int AS c FROM subjects WHERE id = ANY($1::bigint[]) AND book_id = $2`,
-      [subjectIds, bookId]
+      `SELECT COUNT(DISTINCT id)::int AS c FROM subjects WHERE id = ANY($1::bigint[]) AND book_id = $2`,
+      [uniqSubjects, bookId]
     );
-    if (r.rows[0].c !== subjectIds.length) {
+    if (r.rows[0].c !== uniqSubjects.length) {
       throw Object.assign(new Error('one or more subject_id not in this book'), { status: 400 });
     }
   }
   if (accountIds.length) {
+    const uniqAccounts = [...new Set(accountIds.map(Number))];
     const r = await client.query(
-      `SELECT COUNT(*)::int AS c FROM ag_accounts WHERE id = ANY($1::bigint[]) AND book_id = $2`,
-      [accountIds, bookId]
+      `SELECT COUNT(DISTINCT id)::int AS c FROM ag_accounts WHERE id = ANY($1::bigint[]) AND book_id = $2`,
+      [uniqAccounts, bookId]
     );
-    if (r.rows[0].c !== accountIds.length) {
+    if (r.rows[0].c !== uniqAccounts.length) {
       throw Object.assign(new Error('one or more account_id not in this book'), { status: 400 });
     }
   }
@@ -221,20 +225,23 @@ async function validateFKs(client, bookId, opts) {
 }
 
 // ── 套用帳戶餘額變化（+/- direction）──────────────────────────────────
+// Bug A fix (2026-05-13): 之前用 `$1 * $2` 兩個 parameter 讓 pg 推斷不出 type
+// (operator is not unique: unknown * unknown). 直接在 JS 算好 signed delta 即可.
 async function applyBalanceDelta(client, bookId, type, outAcc, inAcc, amount, direction) {
   const sign = direction === 'apply' ? 1 : -1;  // 'apply' or 'revert'
+  const signedAmount = Number(amount) * sign;
   if (type === 'expense' || type === 'transfer') {
     await client.query(
-      `UPDATE ag_accounts SET current_balance = current_balance - $1 * $2, updated_at = NOW()
-         WHERE id = $3 AND book_id = $4`,
-      [amount, sign, outAcc, bookId]
+      `UPDATE ag_accounts SET current_balance = current_balance - $1::numeric, updated_at = NOW()
+         WHERE id = $2 AND book_id = $3`,
+      [signedAmount, outAcc, bookId]
     );
   }
   if (type === 'income' || type === 'transfer') {
     await client.query(
-      `UPDATE ag_accounts SET current_balance = current_balance + $1 * $2, updated_at = NOW()
-         WHERE id = $3 AND book_id = $4`,
-      [amount, sign, inAcc, bookId]
+      `UPDATE ag_accounts SET current_balance = current_balance + $1::numeric, updated_at = NOW()
+         WHERE id = $2 AND book_id = $3`,
+      [signedAmount, inAcc, bookId]
     );
   }
 }
