@@ -31,7 +31,7 @@ const postingRoutes = require('./routes/posting');
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.12.0';
+const VERSION = '0.13.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // ── Redis ──────────────────────────────────────────────────────────
@@ -271,7 +271,7 @@ app.get('/pending', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pending.ht
 app.get('/journals', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'journals.html')));
 app.get('/setup', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'setup.html')));
 app.get('/reports', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reports.html')));
-// future Phase E (settings) pages will go in PUBLIC_DIR
+app.get('/settings', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'settings.html')));
 
 app.use('/auth', authRoutes);
 app.use('/', booksRoutes);

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 設定</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.btn-outline-primary{color:#6a3a8a;border-color:#6a3a8a}
+.section-card{background:#fff;border-radius:14px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.05);margin-bottom:20px}
+.section-title{font-size:17px;font-weight:600;margin-bottom:6px;color:#1a1814}
+.section-sub{font-size:12px;color:#888;margin-bottom:18px}
+.field-label{font-size:12px;color:#666;font-weight:500}
+.read-only-banner{background:#fff8e1;border:1px solid #ffeaa7;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a5d00;margin-bottom:16px}
+.mode-card{border:2px solid #e8e2d5;border-radius:12px;padding:16px;cursor:pointer;transition:all .15s;background:#fff;height:100%;display:flex;flex-direction:column}
+.mode-card:hover{border-color:#bcb;background:#faf8f5}
+.mode-card.selected{border-color:#6a3a8a;background:linear-gradient(180deg,#fff,#f3eafa)}
+.mode-card-title{font-size:14px;font-weight:600;color:#1a1814;margin-bottom:4px}
+.mode-card-key{font-family:'SF Mono','Consolas',monospace;font-size:11px;color:#6a3a8a;font-weight:700;letter-spacing:.05em;margin-bottom:6px}
+.mode-card-desc{font-size:12px;color:#666;line-height:1.6;flex:1}
+.mode-card.warning{border-color:#e8e2d5}
+.mode-card.warning.selected{border-color:#fd7e14;background:linear-gradient(180deg,#fff,#fff5e6)}
+.mode-card.warning .mode-card-key{color:#fd7e14}
+.mode-card.danger{border-color:#e8e2d5}
+.mode-card.danger.selected{border-color:#c4453a;background:linear-gradient(180deg,#fff,#fdeae8)}
+.mode-card.danger .mode-card-key{color:#c4453a}
+.current-badge{display:inline-block;padding:3px 10px;background:#d1e7dd;color:#0a3622;border-radius:8px;font-size:11px;font-weight:600}
+.empty-state{padding:30px;text-align:center;color:#888}
+.toast-success{position:fixed;top:80px;right:20px;background:#d1e7dd;color:#0a3622;padding:12px 18px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:9999;font-size:13px;animation:slideIn .25s}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
+      <a class="nav-link" href="/journals?new=1">記一筆</a>
+      <a class="nav-link" href="/journals">明細</a>
+      <a class="nav-link" href="/reports">報表</a>
+      <a class="nav-link" href="/setup">主檔</a>
+      <a class="nav-link active" href="/settings">設定</a>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4" style="max-width:860px">
+  <h5 class="mb-3">系統設定</h5>
+
+  <div id="readOnlyBanner" class="read-only-banner d-none">
+    ⚠ 你目前的角色是 <strong id="myRoleName">—</strong>，無法修改設定。要改請聯絡 owner 或 admin。
+  </div>
+  <div id="loading" class="empty-state">載入中...</div>
+
+  <div id="content" class="d-none">
+    <!-- 帳本資料 -->
+    <div class="section-card">
+      <div class="section-title">帳本資料</div>
+      <div class="section-sub">基本資訊。改完按底下「儲存帳本資料」一次送出。</div>
+
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="field-label">帳本代碼</label>
+          <input type="text" class="form-control" id="fCode" readonly>
+        </div>
+        <div class="col-md-8">
+          <label class="field-label">帳本名稱 *</label>
+          <input type="text" class="form-control" id="fName" maxlength="100">
+        </div>
+        <div class="col-md-7">
+          <label class="field-label">公司全名</label>
+          <input type="text" class="form-control" id="fCompany" maxlength="200" placeholder="例 花現鳥巢餐廳有限公司">
+        </div>
+        <div class="col-md-5">
+          <label class="field-label">統編</label>
+          <input type="text" class="form-control" id="fTaxId" maxlength="8" pattern="\d{8}" placeholder="8 碼">
+        </div>
+        <div class="col-md-4">
+          <label class="field-label">幣別</label>
+          <select class="form-select" id="fCurrency">
+            <option value="TWD">TWD 台幣</option>
+            <option value="USD">USD 美元</option>
+            <option value="JPY">JPY 日圓</option>
+            <option value="CNY">CNY 人民幣</option>
+            <option value="HKD">HKD 港幣</option>
+            <option value="EUR">EUR 歐元</option>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="field-label">會計年度起月</label>
+          <select class="form-select" id="fFiscalMonth">
+            <option value="1">1 月（曆年制）</option>
+            <option value="4">4 月（學年制）</option>
+            <option value="7">7 月</option>
+            <option value="10">10 月</option>
+          </select>
+        </div>
+        <div class="col-md-4 d-flex align-items-end">
+          <button class="btn btn-primary w-100" id="saveBookBtn" onclick="saveBookData()">💾 儲存帳本資料</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Posting mode -->
+    <div class="section-card">
+      <div class="section-title">記帳模式（posting_mode）</div>
+      <div class="section-sub">
+        決定 LEO 等外部系統 webhook 推來的事件要不要老闆按過才入帳。
+        目前模式：<span class="current-badge" id="currentModeBadge">—</span>
+      </div>
+
+      <div class="row g-3" id="modeCards">
+        <div class="col-md-4">
+          <div class="mode-card" data-mode="review" onclick="selectMode('review')">
+            <div class="mode-card-key">REVIEW</div>
+            <div class="mode-card-title">🛡 保守審核（預設）</div>
+            <div class="mode-card-desc">外部 webhook 進來 → 變待審 pending 事件 → 老闆在「待審」頁按核准 / 退回，才會真正進帳。<br><strong>推薦：上線首 1-3 個月用這個</strong>，確保 LEO 推來的金額是對的。</div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="mode-card warning" data-mode="auto" onclick="selectMode('auto')">
+            <div class="mode-card-key">AUTO</div>
+            <div class="mode-card-title">⚡ 自動入帳</div>
+            <div class="mode-card-desc">外部 webhook 進來 → 直接寫入 journal_logs、帳戶餘額直接變動，不停在待審。<br><strong>⚠ 切到這個之前，先確認 LEO 推送的金額 / 科目 / 帳戶 mapping 已驗過 1-2 個月不出錯。</strong></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="mode-card danger" data-mode="manual" onclick="selectMode('manual')">
+            <div class="mode-card-key">MANUAL</div>
+            <div class="mode-card-title">✋ 只手動記</div>
+            <div class="mode-card-desc">完全拒絕外部 webhook（會回 403）。只能透過記帳雲自己的「記一筆」UI 輸入。<br>用於：暫停 LEO 整合 / 對帳期間 / 測試環境。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3 d-flex justify-content-end">
+        <button class="btn btn-primary" id="saveModeBtn" onclick="saveMode()" disabled>儲存記帳模式</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toastBox"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const BOOK = 'NEST0001';
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault(); localStorage.clear(); location.href = '/';
+});
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const headers = { Authorization: 'Bearer ' + token, ...(opts.headers || {}) };
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function toast(msg, type = 'success') {
+  const div = document.createElement('div');
+  div.className = type === 'success' ? 'toast-success' : 'toast-success';
+  if (type === 'error') div.style.background = '#fdeae8';
+  if (type === 'error') div.style.color = '#a94a3a';
+  div.textContent = msg;
+  $('toastBox').appendChild(div);
+  setTimeout(() => div.remove(), 2800);
+}
+
+let bookData = null;
+let myRole = null;
+let pendingMode = null;
+
+async function load() {
+  try {
+    const r = await api(`/B/${BOOK}`);
+    bookData = r.book;
+    myRole = r.my_role;
+    render();
+  } catch (e) {
+    $('loading').innerHTML = `<div class="text-danger">載入失敗: ${e.message}</div>`;
+  }
+}
+function render() {
+  $('loading').classList.add('d-none');
+  $('content').classList.remove('d-none');
+  const canEdit = myRole === 'owner' || myRole === 'admin';
+  if (!canEdit) {
+    $('readOnlyBanner').classList.remove('d-none');
+    $('myRoleName').textContent = ({owner:'owner', admin:'admin', editor:'editor', viewer:'viewer'})[myRole] || myRole;
+  }
+  $('fCode').value = bookData.code || '';
+  $('fName').value = bookData.name || '';
+  $('fCompany').value = bookData.company_name || '';
+  $('fTaxId').value = bookData.tax_id || '';
+  $('fCurrency').value = bookData.currency || 'TWD';
+  $('fFiscalMonth').value = bookData.fiscal_year_start_month || 1;
+  if (!canEdit) {
+    ['fName', 'fCompany', 'fTaxId', 'fCurrency', 'fFiscalMonth'].forEach((id) => $(id).disabled = true);
+    $('saveBookBtn').disabled = true;
+    $('modeCards').style.pointerEvents = 'none';
+    $('modeCards').style.opacity = '.6';
+  }
+  // posting mode 卡片
+  const mode = bookData.posting_mode || 'review';
+  pendingMode = mode;
+  $('currentModeBadge').textContent = ({review:'REVIEW 保守審核', auto:'AUTO 自動入帳', manual:'MANUAL 只手動記'})[mode] || mode;
+  document.querySelectorAll('.mode-card').forEach((c) => c.classList.toggle('selected', c.dataset.mode === mode));
+}
+
+function selectMode(mode) {
+  if (myRole !== 'owner' && myRole !== 'admin') return;
+  pendingMode = mode;
+  document.querySelectorAll('.mode-card').forEach((c) => c.classList.toggle('selected', c.dataset.mode === mode));
+  // enable save if different from current
+  $('saveModeBtn').disabled = (mode === (bookData.posting_mode || 'review'));
+}
+
+async function saveBookData() {
+  const name = $('fName').value.trim();
+  if (!name) { toast('帳本名稱必填', 'error'); return; }
+  const taxId = $('fTaxId').value.trim();
+  if (taxId && !/^\d{8}$/.test(taxId)) { toast('統編必須是 8 碼數字', 'error'); return; }
+  const payload = {
+    name,
+    company_name: $('fCompany').value.trim() || null,
+    tax_id: taxId || null,
+    currency: $('fCurrency').value,
+    fiscal_year_start_month: parseInt($('fFiscalMonth').value, 10),
+  };
+  const btn = $('saveBookBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    const r = await api(`/B/${BOOK}`, { method: 'PATCH', body: payload });
+    bookData = r.book;
+    toast('✓ 帳本資料已儲存');
+  } catch (e) {
+    toast('儲存失敗: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '💾 儲存帳本資料';
+  }
+}
+
+async function saveMode() {
+  if (!pendingMode || pendingMode === (bookData.posting_mode || 'review')) return;
+  let confirmMsg = `確認切換到 「${pendingMode.toUpperCase()}」 模式？`;
+  if (pendingMode === 'auto') {
+    confirmMsg += '\n\n⚠ AUTO 模式 = 外部 webhook 直接入帳，跳過審核。\n切前請確認 LEO 推送的金額 / 科目 mapping 已驗過。';
+  } else if (pendingMode === 'manual') {
+    confirmMsg += '\n\n⚠ MANUAL 模式 = 外部 webhook 會被全部拒絕。\nLEO 系統的支出單 / POS 結帳推來會 403。';
+  }
+  if (!confirm(confirmMsg)) return;
+  const btn = $('saveModeBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    const r = await api(`/B/${BOOK}`, { method: 'PATCH', body: { posting_mode: pendingMode } });
+    bookData = r.book;
+    toast(`✓ 已切換為 ${pendingMode.toUpperCase()} 模式`);
+    $('currentModeBadge').textContent = ({review:'REVIEW 保守審核', auto:'AUTO 自動入帳', manual:'MANUAL 只手動記'})[pendingMode];
+  } catch (e) {
+    toast('切換失敗: ' + e.message, 'error');
+    document.querySelectorAll('.mode-card').forEach((c) => c.classList.toggle('selected', c.dataset.mode === (bookData.posting_mode || 'review')));
+  } finally {
+    btn.textContent = '儲存記帳模式';
+  }
+}
+
+load();
+</script>
+</body>
+</html>
