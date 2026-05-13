@@ -711,6 +711,296 @@ router.delete(
   })
 );
 
+// ============================================================================
+// POST /B/:bookCode/journals/:id/reverse  (D14 / N1 / P2 / Q11)
+// 新 canonical reverse endpoint — 強制 reason，寫 reverse_audit_log，支援 composite
+// ============================================================================
+router.post(
+  '/B/:bookCode/journals/:id/reverse',
+  loadBook,
+  requireBookRole('owner', 'admin'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+    const reason = (req.body && req.body.reason && String(req.body.reason).trim()) || null;
+    if (!reason) return res.status(400).json({ error: 'reason required' });
+
+    const result = await withTransaction(async (client) => {
+      // Q11: SELECT FOR UPDATE 鎖
+      const origRes = await client.query(
+        `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
+        [id, req.book.id]
+      );
+      if (origRes.rows.length === 0) {
+        throw Object.assign(new Error('journal not found'), { status: 404 });
+      }
+      const o = origRes.rows[0];
+
+      // Q15 cascade 防護
+      if (o.reverses_id) {
+        throw Object.assign(
+          new Error(`journal #${o.id} is itself a reverse, cannot re-reverse`),
+          { status: 409 }
+        );
+      }
+      const dupCheck = await client.query(
+        `SELECT id FROM journal_logs WHERE reverses_id = $1 LIMIT 1`,
+        [o.id]
+      );
+      if (dupCheck.rows.length > 0) {
+        throw Object.assign(
+          new Error(`journal #${o.id} already reversed by #${dupCheck.rows[0].id}`),
+          { status: 409 }
+        );
+      }
+
+      const todayDate = new Date().toISOString().slice(0, 10);
+      let reverseId;
+
+      if (o.is_composite) {
+        // 1A — Composite Reverse: 複製 legs 取負
+        const legsRes = await client.query(
+          `SELECT * FROM journal_legs WHERE journal_log_id = $1 ORDER BY leg_no`,
+          [o.id]
+        );
+        const legs = legsRes.rows;
+
+        // 算 reverse header amount = sum(positive account legs after negation = sum(negative account legs of original))
+        // 簡化：直接 negate 原 amount
+        const ins = await client.query(
+          `INSERT INTO journal_logs (
+             book_id, date, type, amount,
+             subject_id,
+             summary, note,
+             reverses_id, original_date,
+             is_composite,
+             created_by, updated_by
+           ) VALUES ($1, $2, 'composite', $3, $4, $5, $6, $7, $8, TRUE, $9, $9)
+           RETURNING *`,
+          [
+            req.book.id, todayDate, Number(o.amount), o.subject_id,
+            `Reverse of #${o.id}`, reason,
+            o.id, o.date, req.user.id,
+          ]
+        );
+        const reverse = ins.rows[0];
+        reverseId = reverse.id;
+
+        // 複製 legs 取負，並回滾 ag_accounts
+        for (const leg of legs) {
+          const negAmt = -Number(leg.amount);
+          await client.query(
+            `INSERT INTO journal_legs (journal_log_id, leg_no, kind, subject_id, account_id, amount, note)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [reverse.id, leg.leg_no, leg.kind, leg.subject_id, leg.account_id, negAmt, leg.note]
+          );
+          if (leg.kind === 'account') {
+            await client.query(
+              `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
+                WHERE id = $2 AND book_id = $3`,
+              [negAmt, leg.account_id, req.book.id]
+            );
+          }
+        }
+      } else {
+        // 1B — Legacy Reverse: 走既有 M1 1c swap 邏輯
+        let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
+        if (o.type === 'expense') {
+          reverseType = 'income';
+          outAcc = null; inAcc = o.transfer_out_account_id;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else if (o.type === 'income') {
+          reverseType = 'expense';
+          outAcc = o.transfer_in_account_id; inAcc = null;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else if (o.type === 'transfer') {
+          reverseType = 'transfer';
+          outAcc = o.transfer_in_account_id; inAcc = o.transfer_out_account_id;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else if (o.type === 'reclassify') {
+          reverseType = 'reclassify';
+          outAcc = null; inAcc = null;
+          fromSubject = o.subject_id;
+          newSubjectId = o.reclassify_from_subject_id;
+        } else {
+          throw Object.assign(new Error(`unsupported type for reverse: ${o.type}`), { status: 400 });
+        }
+
+        const ins = await client.query(
+          `INSERT INTO journal_logs (
+             book_id, date, type, amount,
+             subject_id, reclassify_from_subject_id,
+             transfer_out_account_id, transfer_in_account_id,
+             counterparty_id, summary, note,
+             reverses_id, original_date,
+             created_by, updated_by
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+           RETURNING *`,
+          [
+            req.book.id, todayDate, reverseType, o.amount,
+            newSubjectId, fromSubject,
+            outAcc, inAcc,
+            o.counterparty_id, `Reverse of #${o.id}`, reason,
+            o.id, o.date, req.user.id,
+          ]
+        );
+        const reverse = ins.rows[0];
+        reverseId = reverse.id;
+
+        await applyBalanceDelta(
+          client, req.book.id, reverseType,
+          outAcc, inAcc, Number(o.amount), 'apply'
+        );
+      }
+
+      // 雙向標記
+      await client.query(
+        `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
+        [reverseId, o.id]
+      );
+
+      // 寫 reverse_audit_log
+      await client.query(
+        `INSERT INTO reverse_audit_log (original_journal_id, reverse_journal_id, reversed_by_user_id, reason)
+         VALUES ($1, $2, $3, $4)`,
+        [o.id, reverseId, req.user.id, reason]
+      );
+
+      return { original_id: o.id, reverse_id: reverseId };
+    });
+
+    res.json({ ok: true, ...result });
+  })
+);
+
+// ============================================================================
+// GET /B/:bookCode/journals/:id/legs  (D14)
+// ============================================================================
+router.get('/B/:bookCode/journals/:id/legs', loadBook, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+  const jr = await query(
+    `SELECT id, is_composite, type, date FROM journal_logs WHERE id = $1 AND book_id = $2`,
+    [id, req.book.id]
+  );
+  if (jr.rows.length === 0) return res.status(404).json({ error: 'journal not found' });
+
+  const legsRes = await query(
+    `SELECT l.*, s.code AS subject_code, s.name AS subject_name, a.name AS account_name
+       FROM journal_legs l
+       LEFT JOIN subjects s ON s.id = l.subject_id
+       LEFT JOIN ag_accounts a ON a.id = l.account_id
+      WHERE l.journal_log_id = $1
+      ORDER BY l.leg_no`,
+    [id]
+  );
+  res.json({ journal_id: id, is_composite: jr.rows[0].is_composite, legs: legsRes.rows });
+}));
+
+// ============================================================================
+// GET /B/:bookCode/journals/:id/history  (B5)
+// ============================================================================
+router.get('/B/:bookCode/journals/:id/history', loadBook, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+
+  const jr = await query(
+    `SELECT j.*, cu.name AS created_by_name
+       FROM journal_logs j
+       LEFT JOIN users cu ON cu.id = j.created_by
+      WHERE j.id = $1 AND j.book_id = $2`,
+    [id, req.book.id]
+  );
+  if (jr.rows.length === 0) return res.status(404).json({ error: 'journal not found' });
+  const j = jr.rows[0];
+
+  const events = [];
+  events.push({
+    type: 'created',
+    at: j.created_at,
+    actor: j.created_by_name || (j.created_by === 0 ? 'System Bot' : 'unknown'),
+    via: j.external_source || 'manual',
+    triggered_by_emp_id: j.triggered_by_external_emp_id || null,
+    webhook_log_id: j.webhook_log_id || null,
+  });
+
+  // pending approval audit
+  const pj = await query(
+    `SELECT pj.status, pj.approved_at, pj.rejected_at, pj.rejected_reason,
+            au.name AS approved_by_name, ru.name AS rejected_by_name
+       FROM pending_journals pj
+       LEFT JOIN users au ON au.id = pj.approved_by_user_id
+       LEFT JOIN users ru ON ru.id = pj.rejected_by_user_id
+      WHERE pj.resulting_journal_id = $1
+      LIMIT 1`,
+    [id]
+  );
+  if (pj.rows.length > 0) {
+    const p = pj.rows[0];
+    if (p.approved_at) events.push({ type: 'approved', at: p.approved_at, actor: p.approved_by_name });
+    if (p.rejected_at) events.push({ type: 'rejected', at: p.rejected_at, actor: p.rejected_by_name, reason: p.rejected_reason });
+  }
+
+  // reversed events
+  if (j.reversed_by_id) {
+    const rev = await query(
+      `SELECT r.id, r.created_at, ra.reason, ru.name AS reversed_by_name
+         FROM journal_logs r
+         LEFT JOIN reverse_audit_log ra ON ra.reverse_journal_id = r.id
+         LEFT JOIN users ru ON ru.id = ra.reversed_by_user_id
+        WHERE r.id = $1`,
+      [j.reversed_by_id]
+    );
+    if (rev.rows.length > 0) {
+      events.push({
+        type: 'reversed',
+        at: rev.rows[0].created_at,
+        actor: rev.rows[0].reversed_by_name,
+        reason: rev.rows[0].reason,
+        reverse_id: rev.rows[0].id,
+      });
+    }
+  }
+
+  // 若本筆就是 reverse，記回顯
+  if (j.reverses_id) {
+    const ra = await query(
+      `SELECT reason, ru.name AS reversed_by_name
+         FROM reverse_audit_log
+         LEFT JOIN users ru ON ru.id = reversed_by_user_id
+        WHERE reverse_journal_id = $1`,
+      [j.id]
+    );
+    if (ra.rows.length > 0) {
+      events.push({
+        type: 'is_reverse_of',
+        original_id: j.reverses_id,
+        reason: ra.rows[0].reason,
+        actor: ra.rows[0].reversed_by_name,
+        at: j.created_at,
+      });
+    }
+  }
+
+  events.sort((a, b) => new Date(a.at) - new Date(b.at));
+  res.json({
+    journal_id: j.id,
+    journal: {
+      date: j.date,
+      original_date: j.original_date,
+      type: j.type,
+      is_composite: j.is_composite,
+      amount: j.amount,
+      summary: j.summary,
+      external_source: j.external_source,
+      external_id: j.external_id,
+      reverses_id: j.reverses_id,
+      reversed_by_id: j.reversed_by_id,
+    },
+    events,
+  });
+}));
+
 module.exports = router;
 
 // 統一錯誤導向 (status 從 error.status 拿)

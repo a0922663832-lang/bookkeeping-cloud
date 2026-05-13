@@ -7,6 +7,7 @@ services:
     ports:
       - "3001:3001"
     environment:
+      TZ: Asia/Taipei                  # D26：強制台北時區
       DATABASE_URL: postgres://nest:${POSTGRES_PASSWORD:-nestpass}@postgres:5432/bookkeeping
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev_secret_change_me_64chars_minimum_aaaaaaaaaaaaaaaaaaaaaaa}
@@ -17,6 +18,9 @@ services:
       HR_BASE_URL: ${HR_BASE_URL:-http://10.0.1.168:3000}
       HR_DEFAULT_BOOK_CODE: ${HR_DEFAULT_BOOK_CODE:-NEST0001}
       LEGACY_EMAIL_LOGIN: ${LEGACY_EMAIL_LOGIN:-false}
+      # D16: 環境分離
+      LINE_NOTIFY_TOKEN: ${LINE_NOTIFY_TOKEN:-}
+      LINE_NOTIFY_TOKEN_STAGING: ${LINE_NOTIFY_TOKEN_STAGING:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,6 +36,8 @@ services:
     image: postgres:16-alpine
     container_name: bookkeeping-cloud-postgres
     environment:
+      TZ: Asia/Taipei                  # D26
+      PGTZ: Asia/Taipei                # D26: postgres client default tz
       POSTGRES_USER: nest
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nestpass}
       POSTGRES_DB: bookkeeping

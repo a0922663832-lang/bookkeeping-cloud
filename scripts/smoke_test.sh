@@ -186,6 +186,79 @@ curl -s -m 5 -X POST -H "Authorization: Bearer $HR_TOKEN" -H 'Content-Type: appl
 R=$(curl -s -m 10 -X POST -H 'Content-Type: application/json' -d '{"emp_id":"2026-G00003","pin":"1807"}' "$BASE/auth/login")
 echo "$R" | grep -q "未開通" && ok "T22b cloud_access 收回 (editor→none) 即時生效" || ng "T22b toggle off" "$R"
 
+# ============================================================================
+# Phase 0.5 (M5 cloud) 新增 smoke：composite journal + reverse + new endpoints
+# 全部走 NEST0099 staging book，避免污染 production
+# ============================================================================
+STAGING_BOOK="NEST0099"
+
+# T23: NEST0099 staging book 存在
+R=$(curl -s -m 5 -H "$AUTH" "$BASE/B/$STAGING_BOOK")
+echo "$R" | grep -q '"code":"NEST0099"' && ok "T23 NEST0099 staging book 存在" || ng "T23 staging book" "$R"
+
+# T24: composite journal via /internal/posting (auto-post in NEST0099)
+TS=$(date +%s%3N)
+EXTID="smoke_composite_$TS"
+PAYLOAD='{
+  "external_source": "leo_pos",
+  "external_id": "'$EXTID'",
+  "event_type": "pos_shift_settled",
+  "payload": {"shift_id": 999, "triggered_by_emp_id": "1989-G00001"},
+  "triggered_by_emp_id": "1989-G00001",
+  "proposed_journal": {
+    "date": "2026-05-13",
+    "type": "composite",
+    "summary": "smoke composite shift",
+    "legs": [
+      {"leg_no": 1, "kind": "account", "account_ref": "現金袋",   "amount": 1000},
+      {"leg_no": 2, "kind": "account", "account_ref": "彰化品圓", "amount": 500},
+      {"leg_no": 3, "kind": "subject", "subject_code": "4101",   "amount": 1500},
+      {"leg_no": 4, "kind": "subject", "subject_code": "4191",   "amount": -100},
+      {"leg_no": 5, "kind": "subject", "subject_code": "4109",   "amount": 100}
+    ]
+  }
+}'
+R=$(curl -s -m 10 -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$BASE/B/$STAGING_BOOK/internal/posting")
+JID=$(echo "$R" | python3 -c "import sys,json; print(json.load(sys.stdin).get('journal_id',''))" 2>/dev/null)
+if [ -n "$JID" ]; then ok "T24 composite journal auto-post → id=$JID" ; else ng "T24 composite post" "$R"; fi
+
+# T25: GET /journals/:id/legs 列 5 條 leg
+R=$(curl -s -m 5 -H "$AUTH" "$BASE/B/$STAGING_BOOK/journals/$JID/legs")
+LEG_COUNT=$(echo "$R" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('legs',[])))" 2>/dev/null)
+[ "$LEG_COUNT" = "5" ] && ok "T25 legs endpoint 回 5 條 leg" || ng "T25 legs (count=$LEG_COUNT)" "$R"
+
+# T26: history endpoint 顯示 triggered_by
+R=$(curl -s -m 5 -H "$AUTH" "$BASE/B/$STAGING_BOOK/journals/$JID/history")
+TBE=$(echo "$R" | python3 -c "import sys,json; e=json.load(sys.stdin).get('events',[]); print(e[0].get('triggered_by_emp_id','') if e else '')" 2>/dev/null)
+[ "$TBE" = "1989-G00001" ] && ok "T26 history triggered_by_emp_id=1989-G00001" || ng "T26 history (tbe=$TBE)" "$R"
+
+# T27: 冪等：同 external_id 重推 → already_posted
+R=$(curl -s -m 5 -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$BASE/B/$STAGING_BOOK/internal/posting")
+echo "$R" | grep -q "already_posted" && ok "T27 idempotency 重推回 already_posted" || ng "T27 idempotency" "$R"
+
+# T28: reverse 該 composite journal
+RES=$(curl -s -m 5 -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"reason":"smoke test reverse"}' "$BASE/B/$STAGING_BOOK/journals/$JID/reverse")
+REV_ID=$(echo "$RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reverse_id',''))" 2>/dev/null)
+if [ -n "$REV_ID" ]; then ok "T28 composite reverse → reverse_id=$REV_ID" ; else ng "T28 reverse" "$RES"; fi
+
+# T29: 嘗試再 reverse 已被 reversed 的 → 409
+R=$(curl -s -m 5 -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"reason":"should fail"}' "$BASE/B/$STAGING_BOOK/journals/$JID/reverse")
+[ "$R" = "409" ] && ok "T29 reverse 已被 reverse 的 → 409" || ng "T29 cascade (got $R)" ""
+
+# T30: reverse 沒 reason → 400
+R=$(curl -s -m 5 -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/B/$STAGING_BOOK/journals/$REV_ID/reverse")
+[ "$R" = "400" ] && ok "T30 reverse 沒 reason → 400" || ng "T30 reason required (got $R)" ""
+
+# T31: /reports/range endpoint
+R=$(curl -s -m 5 -H "$AUTH" "$BASE/B/$STAGING_BOOK/reports/range?from=2026-05-01&to=2026-05-31&external_source=leo_pos&subject_code=4101")
+echo "$R" | grep -q '"total"' && ok "T31 /reports/range 回 total" || ng "T31 reports range" "$R"
+
+# T32: /invoices/by-period endpoint
+R=$(curl -s -m 5 -H "$AUTH" "$BASE/B/$STAGING_BOOK/invoices/by-period?yyyymm=202605")
+echo "$R" | grep -q '"invoice_count"' && ok "T32 /invoices/by-period 回 invoice_count" || ng "T32 invoices" "$R"
+
 # ── 報告 ──
 echo ""
 echo "=========================================="

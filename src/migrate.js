@@ -32,7 +32,7 @@ async function runMigrations(pool) {
     const applied = await getAppliedMigrations(client);
     const files = fs
       .readdirSync(MIGRATIONS_DIR)
-      .filter((f) => f.endsWith('.sql'))
+      .filter((f) => f.endsWith('.sql') && !f.includes('.rollback.'))  // F1：排除 rollback 檔
       .sort();
     let count = 0;
     for (const file of files) {

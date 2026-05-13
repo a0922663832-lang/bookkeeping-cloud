@@ -305,6 +305,13 @@ async function start() {
     app.listen(PORT, () => {
       console.log(`[server] bookkeeping cloud v${VERSION} listening on port ${PORT}`);
     });
+
+    // D24: daily close review cron
+    try {
+      require('./dailyReviewCron').startCron();
+    } catch (e) {
+      console.error('[daily-review] cron 啟動失敗:', e.message);
+    }
   } catch (e) {
     console.error('[server] failed to start:', e);
     process.exit(1);

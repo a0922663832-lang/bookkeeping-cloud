@@ -74,39 +74,55 @@ function f2(v) {
  *   - income / expense 直接記到 subject_id 為 +amount
  */
 async function getSubjectNetAmounts(bookId, fromDate, toDate) {
+  // N2 + P2 修正：
+  //   - 用 COALESCE(original_date, date) 當 effective_date（reverse 跨期沖銷正確歸期）
+  //   - composite journal 透過 journal_legs UNION 進來
+  //   - 既有 income/expense/reclassify 分支用 type filter 自動排除 composite，不重複計
   const result = await query(`
     WITH subject_amounts AS (
-      -- income / expense → subject_id +amount
+      -- (1) income / expense → subject_id +amount
       SELECT subject_id, SUM(amount) AS amt
         FROM journal_logs
-       WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date
+       WHERE book_id = $1
+         AND COALESCE(original_date, date) BETWEEN $2::date AND $3::date
          AND type IN ('income', 'expense')
        GROUP BY subject_id
       UNION ALL
-      -- reclassify N>=2: targets 從 child table 拿
+      -- (2) reclassify N>=2: targets 從 child table 拿
       SELECT jrt.target_subject_id AS subject_id, SUM(jrt.amount) AS amt
         FROM journal_reclassify_targets jrt
         JOIN journal_logs j ON j.id = jrt.journal_id
-       WHERE j.book_id = $1 AND j.date BETWEEN $2::date AND $3::date
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
          AND j.type = 'reclassify'
        GROUP BY jrt.target_subject_id
       UNION ALL
-      -- reclassify N=1 legacy: 沒 child row 的 journal 從 journal_logs 自己拿
+      -- (3) reclassify N=1 legacy
       SELECT j.subject_id, SUM(j.amount) AS amt
         FROM journal_logs j
-       WHERE j.book_id = $1 AND j.date BETWEEN $2::date AND $3::date
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
          AND j.type = 'reclassify'
-         AND NOT EXISTS (
-           SELECT 1 FROM journal_reclassify_targets jrt WHERE jrt.journal_id = j.id
-         )
+         AND NOT EXISTS (SELECT 1 FROM journal_reclassify_targets jrt WHERE jrt.journal_id = j.id)
        GROUP BY j.subject_id
       UNION ALL
-      -- reclassify origin: 統一 -SUM(journal_logs.amount) by from_subject
+      -- (4) reclassify origin: 統一 -SUM by from_subject
       SELECT reclassify_from_subject_id AS subject_id, -SUM(amount) AS amt
         FROM journal_logs
-       WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date
+       WHERE book_id = $1
+         AND COALESCE(original_date, date) BETWEEN $2::date AND $3::date
          AND type = 'reclassify'
        GROUP BY reclassify_from_subject_id
+      UNION ALL
+      -- (5) N2: composite legs subject side
+      SELECT l.subject_id, SUM(l.amount) AS amt
+        FROM journal_legs l
+        JOIN journal_logs j ON j.id = l.journal_log_id
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
+         AND j.is_composite = TRUE
+         AND l.subject_id IS NOT NULL
+       GROUP BY l.subject_id
     )
     SELECT s.id AS subject_id, s.code, s.name, s.parent_type, s.display_order,
            COALESCE(SUM(sa.amt), 0)::numeric(15,2) AS amount
@@ -125,21 +141,101 @@ async function getSubjectNetAmounts(bookId, fromDate, toDate) {
  * 缺空月份 — 由 caller fill 預設 0.
  */
 async function getMonthlyTotals(bookId, fromDate, toDate) {
+  // P2 + N2：composite legs 也要計，effective_date = COALESCE(original_date, date)
+  // 對 composite，income 等於 subject parent_type=t1 的 leg sum；expense=t3 leg sum
   const result = await query(`
-    SELECT
-      TO_CHAR(DATE_TRUNC('month', date), 'YYYY-MM') AS month_label,
-      COALESCE(SUM(CASE WHEN type='income' THEN amount END), 0)::numeric(15,2) AS income,
-      COALESCE(SUM(CASE WHEN type='expense' THEN amount END), 0)::numeric(15,2) AS expense
-      FROM journal_logs
-     WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date
-     GROUP BY DATE_TRUNC('month', date)
-     ORDER BY DATE_TRUNC('month', date)
+    WITH monthly_legacy AS (
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', COALESCE(original_date, date)), 'YYYY-MM') AS month_label,
+        SUM(CASE WHEN type='income' THEN amount ELSE 0 END) AS income,
+        SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS expense
+        FROM journal_logs
+       WHERE book_id = $1
+         AND COALESCE(original_date, date) BETWEEN $2::date AND $3::date
+         AND is_composite = FALSE
+       GROUP BY DATE_TRUNC('month', COALESCE(original_date, date))
+    ),
+    monthly_composite AS (
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', COALESCE(j.original_date, j.date)), 'YYYY-MM') AS month_label,
+        SUM(CASE WHEN s.parent_type = 't1' THEN l.amount ELSE 0 END) AS income,
+        SUM(CASE WHEN s.parent_type IN ('t2','t3') THEN l.amount ELSE 0 END) AS expense
+        FROM journal_legs l
+        JOIN journal_logs j ON j.id = l.journal_log_id
+        JOIN subjects s ON s.id = l.subject_id
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
+         AND j.is_composite = TRUE
+       GROUP BY DATE_TRUNC('month', COALESCE(j.original_date, j.date))
+    )
+    SELECT month_label,
+           COALESCE(SUM(income), 0)::numeric(15,2) AS income,
+           COALESCE(SUM(expense), 0)::numeric(15,2) AS expense
+      FROM (
+        SELECT * FROM monthly_legacy
+        UNION ALL
+        SELECT * FROM monthly_composite
+      ) u
+     GROUP BY month_label
+     ORDER BY month_label
   `, [bookId, fromDate, toDate]);
   const map = new Map();
   for (const r of result.rows) {
     map.set(r.month_label, { income: r.income, expense: r.expense });
   }
   return map;
+}
+
+// ── N5: GET /B/:bookCode/reports/range ────────────────────────────
+// 給 reconcile cron / 對外查單一科目區間總額用
+// Query params:
+//   from=YYYY-MM-DD  to=YYYY-MM-DD  (必填)
+//   external_source=leo_pos  (可選 filter)
+//   subject_code=4101  (可選 filter)
+async function getRangeTotal(bookId, fromDate, toDate, externalSource, subjectCode) {
+  const params = [bookId, fromDate, toDate];
+  let sourceClause = '';
+  let subjectClause = '';
+
+  if (externalSource) {
+    params.push(externalSource);
+    sourceClause = `AND j.external_source = $${params.length}`;
+  }
+  if (subjectCode) {
+    params.push(subjectCode);
+    subjectClause = `AND s.code = $${params.length}`;
+  }
+
+  const result = await query(`
+    WITH legacy AS (
+      SELECT s.code, s.id AS subject_id, j.id AS journal_id, j.amount AS amt
+        FROM journal_logs j
+        JOIN subjects s ON s.id = j.subject_id
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
+         AND j.is_composite = FALSE
+         AND j.type IN ('income', 'expense')
+         ${sourceClause}
+         ${subjectClause}
+    ),
+    composite AS (
+      SELECT s.code, s.id AS subject_id, j.id AS journal_id, l.amount AS amt
+        FROM journal_legs l
+        JOIN journal_logs j ON j.id = l.journal_log_id
+        JOIN subjects s ON s.id = l.subject_id
+       WHERE j.book_id = $1
+         AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
+         AND j.is_composite = TRUE
+         ${sourceClause}
+         ${subjectClause}
+    )
+    SELECT
+      COALESCE(SUM(amt), 0)::numeric(15,2) AS total,
+      COUNT(DISTINCT journal_id) AS journal_count
+      FROM (SELECT * FROM legacy UNION ALL SELECT * FROM composite) u
+  `, params);
+
+  return result.rows[0];
 }
 
 // ── GET /B/:bookCode/reports/dashboard ─────────────────────────────────
@@ -317,6 +413,141 @@ router.get('/B/:bookCode/reports/counterparties', loadBook, asyncHandler(async (
              + COALESCE(SUM(CASE WHEN j.type = 'income' THEN j.amount END), 0)) DESC
   `, [req.book.id, from, to]);
   res.json({ from, to, counterparties: result.rows });
+}));
+
+// ── N5: GET /B/:bookCode/reports/range ─────────────────────────────────
+router.get('/B/:bookCode/reports/range', loadBook, asyncHandler(async (req, res) => {
+  const { from, to, external_source, subject_code } = req.query;
+  if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: 'from and to required (YYYY-MM-DD)' });
+  }
+  const r = await getRangeTotal(req.book.id, from, to, external_source || null, subject_code || null);
+  res.json({
+    from, to,
+    external_source: external_source || null,
+    subject_code: subject_code || null,
+    total: r.total,
+    journal_count: r.journal_count,
+  });
+}));
+
+// ── D25: GET /B/:bookCode/invoices/by-period?yyyymm=202605 ─────────────
+router.get('/B/:bookCode/invoices/by-period', loadBook, asyncHandler(async (req, res) => {
+  const yyyymm = req.query.yyyymm;
+  if (!yyyymm || !/^\d{6}$/.test(yyyymm)) {
+    return res.status(400).json({ error: 'yyyymm required (6 digits)' });
+  }
+  const yyyy = yyyymm.slice(0, 4);
+  const mm = yyyymm.slice(4, 6);
+  const fromDate = `${yyyy}-${mm}-01`;
+  const lastDay = new Date(Number(yyyy), Number(mm), 0).getDate();
+  const toDate = `${yyyy}-${mm}-${String(lastDay).padStart(2, '0')}`;
+
+  const result = await query(`
+    SELECT i.*, j.date AS journal_date, j.summary AS journal_summary
+      FROM invoices i
+      LEFT JOIN journal_logs j ON j.id = i.journal_log_id
+     WHERE i.book_id = $1
+       AND (i.invoice_period = $2
+            OR (i.invoice_period IS NULL AND j.date BETWEEN $3::date AND $4::date))
+     ORDER BY j.date, i.id
+  `, [req.book.id, yyyymm, fromDate, toDate]);
+
+  const totalAmount = result.rows.reduce((s, r) => s + Number(r.amount), 0);
+  const withInvoiceNumber = result.rows.filter(r => r.invoice_number).length;
+
+  res.json({
+    period: yyyymm,
+    from: fromDate, to: toDate,
+    invoice_count: result.rows.length,
+    invoice_count_with_number: withInvoiceNumber,
+    invoice_count_without_number: result.rows.length - withInvoiceNumber,
+    total_amount: totalAmount.toFixed(2),
+    invoices: result.rows,
+  });
+}));
+
+// ── D24: Daily Close Review endpoints ──────────────────────────────────
+router.get('/B/:bookCode/daily-review', loadBook, asyncHandler(async (req, res) => {
+  const status = req.query.status || 'pending';
+  if (!['pending', 'acked', 'escalated', 'all'].includes(status)) {
+    return res.status(400).json({ error: 'invalid status' });
+  }
+  const where = ['book_id = $1'];
+  const params = [req.book.id];
+  if (status !== 'all') {
+    where.push(`status = $${params.length + 1}`);
+    params.push(status);
+  }
+  const result = await query(
+    `SELECT dr.*, u.name AS reviewed_by_name
+       FROM daily_review_log dr
+       LEFT JOIN users u ON u.id = dr.reviewed_by_user_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY review_date DESC LIMIT 90`,
+    params
+  );
+  res.json({ daily_reviews: result.rows, count: result.rows.length });
+}));
+
+router.get('/B/:bookCode/daily-review/:date', loadBook, asyncHandler(async (req, res) => {
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const drRes = await query(
+    `SELECT dr.*, u.name AS reviewed_by_name
+       FROM daily_review_log dr
+       LEFT JOIN users u ON u.id = dr.reviewed_by_user_id
+      WHERE dr.book_id = $1 AND dr.review_date = $2::date`,
+    [req.book.id, date]
+  );
+  if (drRes.rows.length === 0) return res.status(404).json({ error: 'no daily review for that date' });
+  const dr = drRes.rows[0];
+  // 展開 journal_log_ids 詳情
+  const ids = Array.isArray(dr.journal_log_ids) ? dr.journal_log_ids : [];
+  let journals = [];
+  if (ids.length > 0) {
+    const jRes = await query(
+      `SELECT id, date, type, amount, summary, external_source, external_id, is_composite,
+              triggered_by_external_emp_id
+         FROM journal_logs WHERE id = ANY($1::bigint[])
+         ORDER BY id`,
+      [ids]
+    );
+    journals = jRes.rows;
+  }
+  res.json({ daily_review: dr, journals });
+}));
+
+router.post('/B/:bookCode/daily-review/:date/ack', requireAuth, loadBook, asyncHandler(async (req, res) => {
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const note = req.body?.note || null;
+  const r = await query(
+    `UPDATE daily_review_log
+        SET status = 'acked',
+            reviewed_by_user_id = $1,
+            reviewed_at = NOW(),
+            ack_note = $2
+      WHERE book_id = $3 AND review_date = $4::date AND status = 'pending'
+      RETURNING *`,
+    [req.user.id, note, req.book.id, date]
+  );
+  if (r.rows.length === 0) return res.status(404).json({ error: 'no pending daily review for that date' });
+  res.json({ ok: true, daily_review: r.rows[0] });
+}));
+
+router.post('/B/:bookCode/daily-review/:date/escalate', requireAuth, loadBook, asyncHandler(async (req, res) => {
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const r = await query(
+    `UPDATE daily_review_log
+        SET status = 'escalated', escalated_at = NOW()
+      WHERE book_id = $1 AND review_date = $2::date AND status = 'pending'
+      RETURNING *`,
+    [req.book.id, date]
+  );
+  if (r.rows.length === 0) return res.status(404).json({ error: 'no pending daily review for that date' });
+  res.json({ ok: true, daily_review: r.rows[0] });
 }));
 
 // error handler for status-tagged errors
