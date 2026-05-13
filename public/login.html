@@ -26,14 +26,18 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
     <div id="err" class="alert alert-danger d-none small" role="alert"></div>
     <form id="loginForm">
       <div class="mb-3">
-        <label class="form-label">Email</label>
-        <input type="email" class="form-control" id="email" required value="a0922663832@gmail.com" autocomplete="email">
+        <label class="form-label">員工編號</label>
+        <input type="text" class="form-control" id="empId" required placeholder="例 E001 / ADMIN" autocomplete="username">
       </div>
       <div class="mb-4">
-        <label class="form-label">密碼</label>
-        <input type="password" class="form-control" id="password" required autocomplete="current-password">
+        <label class="form-label">PIN 密碼</label>
+        <input type="password" class="form-control" id="pin" required placeholder="4 碼以上" autocomplete="current-password" inputmode="numeric">
       </div>
       <button type="submit" class="btn btn-primary w-100" id="submitBtn">登入</button>
+      <div class="text-center mt-3" style="font-size:11px;color:#888">
+        帳號 / PIN 由 LEO HR 系統統一管理<br>
+        改 PIN / 改權限請聯絡 super_admin
+      </div>
     </form>
   </div>
 </div>
@@ -42,8 +46,8 @@ if (localStorage.getItem('token')) location.href = '/dashboard';
 
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const email = document.getElementById('email').value;
-  const password = document.getElementById('password').value;
+  const emp_id = document.getElementById('empId').value.trim();
+  const pin = document.getElementById('pin').value;
   const errBox = document.getElementById('err');
   const btn = document.getElementById('submitBtn');
   errBox.classList.add('d-none');
@@ -51,7 +55,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ emp_id, pin }),
     });
     const data = await r.json();
     if (!r.ok) {

@@ -64,27 +64,44 @@ function f2(v) {
 }
 
 /**
- * 期間內各 subject 的淨金額 (考慮 reclassify).
- * 規格書 §3.2.7 reclassify 語意:
- *   - target subject (subject_id) 視為 +amount
- *   - origin subject (reclassify_from_subject_id) 視為 -amount
+ * 期間內各 subject 的淨金額 (考慮 reclassify 1:1 + 1:N).
+ * 規格書 §3.2.7 + M1 階段 1d (2026-05-13) reclassify 語意:
+ *   - target subject(s) 視為 +amount
+ *     - N=1 legacy: target = journal_logs.subject_id, amount = journal_logs.amount
+ *     - N>=2: 每個 target 從 journal_reclassify_targets.amount 拿,
+ *             journal_logs.subject_id 不重複計入(由 NOT EXISTS 防 double-count)
+ *   - origin subject (reclassify_from_subject_id) 視為 -journal_logs.amount
  *   - income / expense 直接記到 subject_id 為 +amount
  */
 async function getSubjectNetAmounts(bookId, fromDate, toDate) {
   const result = await query(`
     WITH subject_amounts AS (
+      -- income / expense → subject_id +amount
       SELECT subject_id, SUM(amount) AS amt
         FROM journal_logs
        WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date
          AND type IN ('income', 'expense')
        GROUP BY subject_id
       UNION ALL
-      SELECT subject_id, SUM(amount) AS amt
-        FROM journal_logs
-       WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date
-         AND type = 'reclassify'
-       GROUP BY subject_id
+      -- reclassify N>=2: targets 從 child table 拿
+      SELECT jrt.target_subject_id AS subject_id, SUM(jrt.amount) AS amt
+        FROM journal_reclassify_targets jrt
+        JOIN journal_logs j ON j.id = jrt.journal_id
+       WHERE j.book_id = $1 AND j.date BETWEEN $2::date AND $3::date
+         AND j.type = 'reclassify'
+       GROUP BY jrt.target_subject_id
       UNION ALL
+      -- reclassify N=1 legacy: 沒 child row 的 journal 從 journal_logs 自己拿
+      SELECT j.subject_id, SUM(j.amount) AS amt
+        FROM journal_logs j
+       WHERE j.book_id = $1 AND j.date BETWEEN $2::date AND $3::date
+         AND j.type = 'reclassify'
+         AND NOT EXISTS (
+           SELECT 1 FROM journal_reclassify_targets jrt WHERE jrt.journal_id = j.id
+         )
+       GROUP BY j.subject_id
+      UNION ALL
+      -- reclassify origin: 統一 -SUM(journal_logs.amount) by from_subject
       SELECT reclassify_from_subject_id AS subject_id, -SUM(amount) AS amt
         FROM journal_logs
        WHERE book_id = $1 AND date BETWEEN $2::date AND $3::date

@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 主檔設定</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.btn-outline-primary{color:#6a3a8a;border-color:#6a3a8a}
+.btn-outline-primary:hover{background:#6a3a8a;border-color:#6a3a8a}
+.section-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.master-tabs{display:flex;gap:0;border-bottom:2px solid #e8e2d5;margin-bottom:20px}
+.master-tab{padding:12px 20px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;color:#888;font-weight:500}
+.master-tab.active{color:#6a3a8a;border-bottom-color:#6a3a8a}
+.master-tab:hover{color:#6a3a8a}
+.master-tab-count{display:inline-block;background:#f0ece4;color:#666;font-size:11px;padding:1px 7px;border-radius:8px;margin-left:5px}
+.master-tab.active .master-tab-count{background:#f3eafa;color:#6a3a8a}
+table.master-table{width:100%;font-size:13px}
+table.master-table th{background:#faf8f5;font-weight:600;font-size:12px;color:#666;padding:9px 10px;border-bottom:2px solid #e8e2d5}
+table.master-table td{padding:11px 10px;border-bottom:1px solid #f0ece4;vertical-align:middle}
+table.master-table tr.inactive{opacity:.45;background:#fafafa}
+.subj-type-chip{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:600;margin-right:6px}
+.subj-type-chip.t1{background:#e8f5ed;color:#2a7a4a}
+.subj-type-chip.t2{background:#fdeae8;color:#a94a3a}
+.subj-type-chip.t3{background:#fff3cd;color:#856404}
+.subj-type-chip.t4{background:#eaf0fa;color:#1a4a8a}
+.subj-type-chip.t5{background:#f3eafa;color:#6a3a8a}
+.acct-type-chip{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;background:#f0ece4;color:#666}
+.cp-temp-chip{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;background:#fff3cd;color:#856404}
+.cp-promoted-chip{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;background:#d1e7dd;color:#0a3622}
+.cp-type-chip{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;margin-right:4px}
+.cp-type-chip.income{background:#e8f5ed;color:#2a7a4a}
+.cp-type-chip.expense{background:#fdeae8;color:#a94a3a}
+.cp-type-chip.both{background:#eaf0fa;color:#1a4a8a}
+.subj-subtabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;padding:10px;background:#faf8f5;border-radius:10px}
+.subj-subtab{padding:6px 14px;border-radius:18px;cursor:pointer;font-size:12px;background:#fff;border:1px solid #e8e2d5;color:#666}
+.subj-subtab.active{background:#6a3a8a;color:#fff;border-color:#6a3a8a}
+.subj-subtab .count{margin-left:4px;font-size:10px;opacity:.8}
+.amount-cell{text-align:right;font-weight:700;font-family:'SF Mono','Consolas',monospace}
+.amount-cell.pos{color:#1a6a5a}
+.amount-cell.neg{color:#c4453a}
+.balance-locked{color:#888;font-size:11px;margin-left:4px;cursor:help}
+.btn-icon{padding:3px 9px;font-size:12px;line-height:1.4;border-radius:5px}
+.empty-state{padding:40px 20px;text-align:center;color:#888}
+.form-help{font-size:11px;color:#888;margin-top:3px}
+.inactive-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#888}
+.bar-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
+      <a class="nav-link" href="/journals?new=1">記一筆</a>
+      <a class="nav-link" href="/journals">明細</a>
+      <a class="nav-link" href="/reports">報表</a>
+      <a class="nav-link active" href="/setup">主檔</a>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div class="section-card">
+    <h5 class="mb-3">主檔設定</h5>
+    <div class="master-tabs">
+      <div class="master-tab active" data-pane="subjects" onclick="switchPane('subjects')">會計科目 <span class="master-tab-count" id="cntSubjects">—</span></div>
+      <div class="master-tab" data-pane="accounts" onclick="switchPane('accounts')">資金帳戶 <span class="master-tab-count" id="cntAccounts">—</span></div>
+      <div class="master-tab" data-pane="counterparties" onclick="switchPane('counterparties')">收支對象 <span class="master-tab-count" id="cntCounterparties">—</span></div>
+    </div>
+
+    <!-- ────── Subjects pane ────── -->
+    <div id="pane-subjects" class="pane">
+      <div class="bar-actions">
+        <div class="subj-subtabs" id="subjSubtabs">
+          <span class="subj-subtab active" data-t="">全部 <span class="count" id="cntSubjAll">—</span></span>
+          <span class="subj-subtab" data-t="t1">t1 收入 <span class="count" id="cntSubjT1">—</span></span>
+          <span class="subj-subtab" data-t="t2">t2 成本 <span class="count" id="cntSubjT2">—</span></span>
+          <span class="subj-subtab" data-t="t3">t3 費用 <span class="count" id="cntSubjT3">—</span></span>
+          <span class="subj-subtab" data-t="t4">t4 轉帳 <span class="count" id="cntSubjT4">—</span></span>
+          <span class="subj-subtab" data-t="t5">t5 股東 <span class="count" id="cntSubjT5">—</span></span>
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+          <label class="inactive-toggle"><input type="checkbox" id="subjShowInactive" onchange="reloadSubjects()"> 顯示已停用</label>
+          <button class="btn btn-primary btn-sm" onclick="openSubjectModal()">+ 新增科目</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="master-table">
+          <thead><tr>
+            <th style="width:80px">類別</th>
+            <th style="width:100px">代碼</th>
+            <th>科目名稱</th>
+            <th style="width:80px">排序</th>
+            <th style="width:140px">狀態 / 操作</th>
+          </tr></thead>
+          <tbody id="subjRows"><tr><td colspan="5" class="empty-state">載入中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ────── Accounts pane ────── -->
+    <div id="pane-accounts" class="pane d-none">
+      <div class="bar-actions">
+        <div class="text-muted small">所有帳戶 → 初始餘額 + journals 累積 = 目前餘額。<strong>初始/目前餘額不能直接改</strong>（避免破壞 journal 一致性，要調整請走「轉帳」或「重分類」）</div>
+        <div class="d-flex gap-2 align-items-center">
+          <label class="inactive-toggle"><input type="checkbox" id="acctShowInactive" onchange="reloadAccounts()"> 顯示已停用</label>
+          <button class="btn btn-primary btn-sm" onclick="openAccountModal()">+ 新增帳戶</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="master-table">
+          <thead><tr>
+            <th style="width:120px">類型</th>
+            <th>名稱</th>
+            <th>綁定對象</th>
+            <th class="text-end">初始餘額</th>
+            <th class="text-end">目前餘額</th>
+            <th style="width:80px">排序</th>
+            <th style="width:140px">狀態 / 操作</th>
+          </tr></thead>
+          <tbody id="acctRows"><tr><td colspan="7" class="empty-state">載入中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ────── Counterparties pane ────── -->
+    <div id="pane-counterparties" class="pane d-none">
+      <div class="bar-actions">
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <label class="inactive-toggle"><input type="checkbox" id="cpShowInactive" onchange="reloadCounterparties()"> 顯示已停用</label>
+          <label class="inactive-toggle"><input type="checkbox" id="cpShowTempOnly" onchange="reloadCounterparties()"> 只看臨時</label>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="openCounterpartyModal()">+ 新增對象</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="master-table">
+          <thead><tr>
+            <th style="width:90px">類型</th>
+            <th>名稱</th>
+            <th style="width:120px">類別</th>
+            <th style="width:120px">統編</th>
+            <th style="width:80px" class="text-end">引用次數</th>
+            <th style="width:90px">狀態</th>
+            <th style="width:140px">操作</th>
+          </tr></thead>
+          <tbody id="cpRows"><tr><td colspan="7" class="empty-state">載入中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ────── 科目 Modal ────── -->
+<div class="modal fade" id="subjectModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="smTitle">新增科目</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <input type="hidden" id="smId">
+        <div class="mb-3">
+          <label class="form-label small">類別 *</label>
+          <select class="form-select" id="smParentType">
+            <option value="t1">t1 收入</option>
+            <option value="t2">t2 成本</option>
+            <option value="t3">t3 費用</option>
+            <option value="t4">t4 轉帳</option>
+            <option value="t5">t5 股東權益</option>
+          </select>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-4"><label class="form-label small">代碼</label><input type="text" maxlength="10" class="form-control" id="smCode" placeholder="例 4101"><div class="form-help">建議 4 碼數字（選填）</div></div>
+          <div class="col-md-8"><label class="form-label small">名稱 *</label><input type="text" maxlength="50" class="form-control" id="smName"></div>
+        </div>
+        <div class="mb-3 mt-3">
+          <label class="form-label small">排序權重</label>
+          <input type="number" class="form-control" id="smOrder" value="0">
+          <div class="form-help">數字越小越前面</div>
+        </div>
+        <div class="form-check" id="smActiveWrap" style="display:none">
+          <input class="form-check-input" type="checkbox" id="smActive">
+          <label class="form-check-label small" for="smActive">啟用中</label>
+          <div class="form-help">停用後新單不能選此科目，舊資料不受影響</div>
+        </div>
+        <div id="smError" class="alert alert-danger small d-none mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" id="smSaveBtn" onclick="saveSubject()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ────── 帳戶 Modal ────── -->
+<div class="modal fade" id="accountModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="amTitle">新增帳戶</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <input type="hidden" id="amId">
+        <div class="row g-3">
+          <div class="col-md-6"><label class="form-label small">名稱 *</label><input type="text" maxlength="50" class="form-control" id="amName" placeholder="例 玉山銀行"></div>
+          <div class="col-md-6"><label class="form-label small">類型 *</label>
+            <select class="form-select" id="amType">
+              <option value="cash">現金</option>
+              <option value="bank">銀行存款</option>
+              <option value="digital_bank">數位銀行</option>
+              <option value="time_deposit">定期存款</option>
+              <option value="investment">投資</option>
+              <option value="income_account">收款待轉</option>
+              <option value="liability">負債/應付</option>
+              <option value="asset">其他資產</option>
+              <option value="virtual">虛擬（暫存）</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-md-6">
+            <label class="form-label small">綁定對象</label>
+            <select class="form-select" id="amCounterparty"><option value="">— 不綁定 —</option></select>
+            <div class="form-help">負債/應付類帳戶可綁到 counterparty（例：「應付帳款-XX 食品」）</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small">初始餘額</label>
+            <input type="number" step="0.01" class="form-control" id="amInitBal" value="0">
+            <div class="form-help" id="amInitBalHelp">建立時的開帳金額（之後不能改）</div>
+          </div>
+        </div>
+        <div class="mb-3 mt-3">
+          <label class="form-label small">備註</label>
+          <input type="text" class="form-control" id="amNote">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">排序權重</label>
+          <input type="number" class="form-control" id="amOrder" value="0">
+        </div>
+        <div class="form-check" id="amActiveWrap" style="display:none">
+          <input class="form-check-input" type="checkbox" id="amActive">
+          <label class="form-check-label small" for="amActive">啟用中</label>
+        </div>
+        <div id="amError" class="alert alert-danger small d-none mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" id="amSaveBtn" onclick="saveAccount()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ────── 對象 Modal ────── -->
+<div class="modal fade" id="counterpartyModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title" id="cmTitle">新增對象</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <input type="hidden" id="cmId">
+        <div class="row g-3">
+          <div class="col-md-7"><label class="form-label small">名稱 *</label><input type="text" maxlength="100" class="form-control" id="cmName" placeholder="例 XX 食品有限公司"></div>
+          <div class="col-md-5"><label class="form-label small">類型 *</label>
+            <select class="form-select" id="cmType">
+              <option value="expense">支出（廠商）</option>
+              <option value="income">收入（客戶）</option>
+              <option value="both">雙向</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-md-5"><label class="form-label small">類別</label><input type="text" maxlength="50" class="form-control" id="cmCategory" placeholder="食材/水電/..."></div>
+          <div class="col-md-4"><label class="form-label small">統編</label><input type="text" maxlength="8" pattern="\d{8}" class="form-control" id="cmTaxId" placeholder="8 碼"></div>
+          <div class="col-md-3"><label class="form-label small">排序</label><input type="number" class="form-control" id="cmOrder" value="0"></div>
+        </div>
+        <div class="mb-3 mt-3">
+          <label class="form-label small">聯絡資訊</label>
+          <input type="text" class="form-control" id="cmContact" placeholder="電話 / Email / 地址">
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="cmTemporary">
+          <label class="form-check-label small" for="cmTemporary">臨時對象</label>
+          <div class="form-help">引用 N 次（預設 5）後自動提醒升級為正式</div>
+        </div>
+        <div class="form-check" id="cmActiveWrap" style="display:none">
+          <input class="form-check-input" type="checkbox" id="cmActive">
+          <label class="form-check-label small" for="cmActive">啟用中</label>
+        </div>
+        <div id="cmError" class="alert alert-danger small d-none mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" id="cmSaveBtn" onclick="saveCounterparty()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const BOOK = 'NEST0001';
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault(); localStorage.clear(); location.href = '/';
+});
+
+const $ = (id) => document.getElementById(id);
+const SUBJ_TYPE_LABEL = { t1: '收入', t2: '成本', t3: '費用', t4: '轉帳', t5: '股東' };
+const ACCT_TYPE_LABEL = { cash: '現金', bank: '銀行', digital_bank: '數位銀行', time_deposit: '定存', investment: '投資', income_account: '待轉', liability: '負債/應付', asset: '資產', virtual: '虛擬' };
+
+async function api(path, opts = {}) {
+  const headers = { Authorization: 'Bearer ' + token, ...(opts.headers || {}) };
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function fmt(v) { return new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(parseFloat(v || 0)); }
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+
+function switchPane(pane) {
+  document.querySelectorAll('.master-tab').forEach((el) => el.classList.toggle('active', el.dataset.pane === pane));
+  document.querySelectorAll('.pane').forEach((el) => el.classList.toggle('d-none', el.id !== 'pane-' + pane));
+  if (pane === 'subjects' && cache.subjects === null) reloadSubjects();
+  if (pane === 'accounts' && cache.accounts === null) reloadAccounts();
+  if (pane === 'counterparties' && cache.counterparties === null) reloadCounterparties();
+}
+
+const cache = { subjects: null, accounts: null, counterparties: null };
+let subjFilter = '';
+
+// ──────── Subjects ────────
+async function reloadSubjects() {
+  $('subjRows').innerHTML = '<tr><td colspan="5" class="empty-state">載入中...</td></tr>';
+  try {
+    const showInactive = $('subjShowInactive').checked;
+    const r = await api(`/B/${BOOK}/subjects${showInactive ? '?include_inactive=1' : ''}`);
+    cache.subjects = r.subjects || [];
+    const counts = { '': 0, t1: 0, t2: 0, t3: 0, t4: 0, t5: 0 };
+    cache.subjects.forEach((s) => { counts[''] = (counts[''] || 0) + 1; counts[s.parent_type] = (counts[s.parent_type] || 0) + 1; });
+    $('cntSubjects').textContent = counts[''];
+    $('cntSubjAll').textContent = counts[''];
+    ['t1', 't2', 't3', 't4', 't5'].forEach((t) => { $('cntSubj' + t.toUpperCase()).textContent = counts[t] || 0; });
+    renderSubjects();
+  } catch (e) {
+    $('subjRows').innerHTML = `<tr><td colspan="5" class="empty-state text-danger">載入失敗: ${esc(e.message)}</td></tr>`;
+  }
+}
+function renderSubjects() {
+  const list = (cache.subjects || []).filter((s) => !subjFilter || s.parent_type === subjFilter);
+  if (!list.length) { $('subjRows').innerHTML = `<tr><td colspan="5" class="empty-state">無資料</td></tr>`; return; }
+  $('subjRows').innerHTML = list.map((s) => `
+    <tr class="${s.is_active ? '' : 'inactive'}">
+      <td><span class="subj-type-chip ${s.parent_type}">${s.parent_type} ${SUBJ_TYPE_LABEL[s.parent_type] || ''}</span></td>
+      <td><code>${esc(s.code || '')}</code></td>
+      <td>${esc(s.name)}</td>
+      <td>${s.display_order}</td>
+      <td>
+        ${s.is_active ? '<span class="badge bg-success">啟用</span>' : '<span class="badge bg-secondary">停用</span>'}
+        <button class="btn btn-outline-primary btn-icon ms-1" onclick="openSubjectModal(${s.id})">✏️</button>
+      </td>
+    </tr>
+  `).join('');
+}
+document.querySelectorAll('#subjSubtabs .subj-subtab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('#subjSubtabs .subj-subtab').forEach((t) => t.classList.remove('active'));
+    tab.classList.add('active');
+    subjFilter = tab.dataset.t || '';
+    renderSubjects();
+  });
+});
+
+const subjectModal = new bootstrap.Modal($('subjectModal'));
+function openSubjectModal(id) {
+  $('smError').classList.add('d-none');
+  if (id) {
+    const s = (cache.subjects || []).find((x) => x.id === id);
+    if (!s) return;
+    $('smTitle').textContent = `編輯科目 #${id}`;
+    $('smId').value = id;
+    $('smParentType').value = s.parent_type;
+    $('smCode').value = s.code || '';
+    $('smName').value = s.name;
+    $('smOrder').value = s.display_order;
+    $('smActive').checked = !!s.is_active;
+    $('smActiveWrap').style.display = '';
+  } else {
+    $('smTitle').textContent = '新增科目';
+    $('smId').value = '';
+    $('smParentType').value = 't3';
+    $('smCode').value = '';
+    $('smName').value = '';
+    $('smOrder').value = 0;
+    $('smActiveWrap').style.display = 'none';
+  }
+  subjectModal.show();
+}
+async function saveSubject() {
+  $('smError').classList.add('d-none');
+  const id = $('smId').value;
+  const name = $('smName').value.trim();
+  if (!name) { $('smError').textContent = '請填名稱'; $('smError').classList.remove('d-none'); return; }
+  const payload = {
+    parent_type: $('smParentType').value,
+    code: $('smCode').value.trim() || null,
+    name,
+    display_order: Number($('smOrder').value) || 0,
+  };
+  if (id) payload.is_active = $('smActive').checked;
+  const btn = $('smSaveBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if (id) await api(`/B/${BOOK}/subjects/${id}`, { method: 'PATCH', body: payload });
+    else await api(`/B/${BOOK}/subjects`, { method: 'POST', body: payload });
+    subjectModal.hide();
+    reloadSubjects();
+  } catch (e) {
+    $('smError').textContent = e.message; $('smError').classList.remove('d-none');
+  } finally { btn.disabled = false; btn.textContent = '儲存'; }
+}
+
+// ──────── Accounts ────────
+async function reloadAccounts() {
+  $('acctRows').innerHTML = '<tr><td colspan="7" class="empty-state">載入中...</td></tr>';
+  try {
+    const showInactive = $('acctShowInactive').checked;
+    const r = await api(`/B/${BOOK}/accounts${showInactive ? '?include_inactive=1' : ''}`);
+    cache.accounts = r.accounts || [];
+    $('cntAccounts').textContent = cache.accounts.length;
+    renderAccounts();
+  } catch (e) {
+    $('acctRows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">載入失敗: ${esc(e.message)}</td></tr>`;
+  }
+}
+function renderAccounts() {
+  if (!cache.accounts || !cache.accounts.length) { $('acctRows').innerHTML = `<tr><td colspan="7" class="empty-state">無資料</td></tr>`; return; }
+  const cpMap = {};
+  (cache.counterparties || []).forEach((c) => { cpMap[c.id] = c; });
+  $('acctRows').innerHTML = cache.accounts.map((a) => {
+    const cur = parseFloat(a.current_balance || 0);
+    const linked = a.linked_counterparty_id ? esc(cpMap[a.linked_counterparty_id]?.name || `#${a.linked_counterparty_id}`) : '<span class="text-muted">—</span>';
+    return `
+    <tr class="${a.is_active ? '' : 'inactive'}">
+      <td><span class="acct-type-chip">${esc(ACCT_TYPE_LABEL[a.type] || a.type)}</span></td>
+      <td><strong>${esc(a.name)}</strong>${a.note ? `<div class="text-muted small">${esc(a.note)}</div>` : ''}</td>
+      <td>${linked}</td>
+      <td class="amount-cell">$${fmt(a.initial_balance)}</td>
+      <td class="amount-cell ${cur >= 0 ? 'pos' : 'neg'}">$${fmt(cur)}</td>
+      <td>${a.display_order}</td>
+      <td>
+        ${a.is_active ? '<span class="badge bg-success">啟用</span>' : '<span class="badge bg-secondary">停用</span>'}
+        <button class="btn btn-outline-primary btn-icon ms-1" onclick="openAccountModal(${a.id})">✏️</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+const accountModal = new bootstrap.Modal($('accountModal'));
+function openAccountModal(id) {
+  $('amError').classList.add('d-none');
+  // populate counterparty select fresh
+  const cpOpts = (cache.counterparties || []).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  $('amCounterparty').innerHTML = '<option value="">— 不綁定 —</option>' + cpOpts;
+  if (id) {
+    const a = (cache.accounts || []).find((x) => x.id === id);
+    if (!a) return;
+    $('amTitle').textContent = `編輯帳戶 #${id}`;
+    $('amId').value = id;
+    $('amName').value = a.name;
+    $('amType').value = a.type;
+    $('amCounterparty').value = a.linked_counterparty_id || '';
+    $('amInitBal').value = a.initial_balance;
+    $('amInitBal').readOnly = true;
+    $('amInitBalHelp').textContent = '已存在的帳戶不能改初始餘額（會破壞 journal 一致性）';
+    $('amNote').value = a.note || '';
+    $('amOrder').value = a.display_order;
+    $('amActive').checked = !!a.is_active;
+    $('amActiveWrap').style.display = '';
+  } else {
+    $('amTitle').textContent = '新增帳戶';
+    $('amId').value = '';
+    $('amName').value = '';
+    $('amType').value = 'cash';
+    $('amCounterparty').value = '';
+    $('amInitBal').value = 0;
+    $('amInitBal').readOnly = false;
+    $('amInitBalHelp').textContent = '建立時的開帳金額（之後不能改）';
+    $('amNote').value = '';
+    $('amOrder').value = 0;
+    $('amActiveWrap').style.display = 'none';
+  }
+  accountModal.show();
+}
+async function saveAccount() {
+  $('amError').classList.add('d-none');
+  const id = $('amId').value;
+  const name = $('amName').value.trim();
+  if (!name) { $('amError').textContent = '請填名稱'; $('amError').classList.remove('d-none'); return; }
+  const payload = {
+    name,
+    type: $('amType').value,
+    linked_counterparty_id: $('amCounterparty').value ? Number($('amCounterparty').value) : null,
+    note: $('amNote').value.trim() || null,
+    display_order: Number($('amOrder').value) || 0,
+  };
+  if (!id) payload.initial_balance = Number($('amInitBal').value) || 0;
+  if (id) payload.is_active = $('amActive').checked;
+  const btn = $('amSaveBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if (id) await api(`/B/${BOOK}/accounts/${id}`, { method: 'PATCH', body: payload });
+    else await api(`/B/${BOOK}/accounts`, { method: 'POST', body: payload });
+    accountModal.hide();
+    reloadAccounts();
+  } catch (e) {
+    $('amError').textContent = e.message; $('amError').classList.remove('d-none');
+  } finally { btn.disabled = false; btn.textContent = '儲存'; }
+}
+
+// ──────── Counterparties ────────
+async function reloadCounterparties() {
+  $('cpRows').innerHTML = '<tr><td colspan="7" class="empty-state">載入中...</td></tr>';
+  try {
+    const showInactive = $('cpShowInactive').checked;
+    const showTempOnly = $('cpShowTempOnly').checked;
+    const params = new URLSearchParams();
+    if (showInactive) params.set('include_inactive', '1');
+    if (showTempOnly) params.set('is_temporary', '1');
+    const r = await api(`/B/${BOOK}/counterparties?${params}`);
+    cache.counterparties = r.counterparties || [];
+    $('cntCounterparties').textContent = cache.counterparties.length;
+    renderCounterparties();
+  } catch (e) {
+    $('cpRows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">載入失敗: ${esc(e.message)}</td></tr>`;
+  }
+}
+function renderCounterparties() {
+  if (!cache.counterparties || !cache.counterparties.length) { $('cpRows').innerHTML = `<tr><td colspan="7" class="empty-state">無資料</td></tr>`; return; }
+  $('cpRows').innerHTML = cache.counterparties.map((c) => `
+    <tr class="${c.is_active ? '' : 'inactive'}">
+      <td><span class="cp-type-chip ${c.type}">${c.type === 'income' ? '客戶' : c.type === 'expense' ? '廠商' : '雙向'}</span></td>
+      <td><strong>${esc(c.name)}</strong>${c.contact ? `<div class="text-muted small">${esc(c.contact)}</div>` : ''}</td>
+      <td>${esc(c.category || '')}</td>
+      <td><code>${esc(c.tax_id || '')}</code></td>
+      <td class="amount-cell">${c.promote_count}</td>
+      <td>
+        ${c.is_temporary ? `<span class="cp-temp-chip">臨時</span>` : c.promoted_at ? `<span class="cp-promoted-chip">已升級</span>` : '<span class="badge bg-success">正式</span>'}
+        ${c.is_active ? '' : '<br><span class="badge bg-secondary mt-1">停用</span>'}
+      </td>
+      <td>
+        ${c.is_temporary ? `<button class="btn btn-outline-success btn-icon" onclick="promoteCp(${c.id})">⬆ 升級</button> ` : ''}
+        <button class="btn btn-outline-primary btn-icon" onclick="openCounterpartyModal(${c.id})">✏️</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+const counterpartyModal = new bootstrap.Modal($('counterpartyModal'));
+function openCounterpartyModal(id) {
+  $('cmError').classList.add('d-none');
+  if (id) {
+    const c = (cache.counterparties || []).find((x) => x.id === id);
+    if (!c) return;
+    $('cmTitle').textContent = `編輯對象 #${id}`;
+    $('cmId').value = id;
+    $('cmName').value = c.name;
+    $('cmType').value = c.type;
+    $('cmCategory').value = c.category || '';
+    $('cmTaxId').value = c.tax_id || '';
+    $('cmContact').value = c.contact || '';
+    $('cmOrder').value = c.display_order;
+    $('cmTemporary').checked = !!c.is_temporary;
+    $('cmActive').checked = !!c.is_active;
+    $('cmActiveWrap').style.display = '';
+  } else {
+    $('cmTitle').textContent = '新增對象';
+    $('cmId').value = '';
+    $('cmName').value = '';
+    $('cmType').value = 'expense';
+    $('cmCategory').value = '';
+    $('cmTaxId').value = '';
+    $('cmContact').value = '';
+    $('cmOrder').value = 0;
+    $('cmTemporary').checked = false;
+    $('cmActiveWrap').style.display = 'none';
+  }
+  counterpartyModal.show();
+}
+async function saveCounterparty() {
+  $('cmError').classList.add('d-none');
+  const id = $('cmId').value;
+  const name = $('cmName').value.trim();
+  if (!name) { $('cmError').textContent = '請填名稱'; $('cmError').classList.remove('d-none'); return; }
+  const taxId = $('cmTaxId').value.trim();
+  if (taxId && !/^\d{8}$/.test(taxId)) { $('cmError').textContent = '統編必須是 8 碼數字'; $('cmError').classList.remove('d-none'); return; }
+  const payload = {
+    name,
+    type: $('cmType').value,
+    category: $('cmCategory').value.trim() || null,
+    tax_id: taxId || null,
+    contact: $('cmContact').value.trim() || null,
+    display_order: Number($('cmOrder').value) || 0,
+    is_temporary: $('cmTemporary').checked,
+  };
+  if (id) payload.is_active = $('cmActive').checked;
+  const btn = $('cmSaveBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if (id) await api(`/B/${BOOK}/counterparties/${id}`, { method: 'PATCH', body: payload });
+    else await api(`/B/${BOOK}/counterparties`, { method: 'POST', body: payload });
+    counterpartyModal.hide();
+    reloadCounterparties();
+  } catch (e) {
+    $('cmError').textContent = e.message; $('cmError').classList.remove('d-none');
+  } finally { btn.disabled = false; btn.textContent = '儲存'; }
+}
+
+async function promoteCp(id) {
+  if (!confirm('確定要升級為正式對象？升級後不能再標記為臨時。')) return;
+  try {
+    await api(`/B/${BOOK}/counterparties/${id}`, { method: 'PATCH', body: { is_temporary: false } });
+    reloadCounterparties();
+  } catch (e) { alert('升級失敗: ' + e.message); }
+}
+
+// ──────── boot ────────
+(async () => {
+  // load all 3 initially so cross-tab dependencies (counterparties in accounts modal) work
+  await Promise.all([reloadSubjects(), reloadAccounts(), reloadCounterparties()]);
+})();
+</script>
+</body>
+</html>

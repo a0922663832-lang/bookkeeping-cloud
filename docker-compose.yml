@@ -13,6 +13,10 @@ services:
       PORT: 3001
       NODE_ENV: ${NODE_ENV:-development}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-changeme}
+      # HR SSO (2026-05-13, plan: drifting-toasting-corbato.md)
+      HR_BASE_URL: ${HR_BASE_URL:-http://10.0.1.168:3000}
+      HR_DEFAULT_BOOK_CODE: ${HR_DEFAULT_BOOK_CODE:-NEST0001}
+      LEGACY_EMAIL_LOGIN: ${LEGACY_EMAIL_LOGIN:-false}
     depends_on:
       postgres:
         condition: service_healthy

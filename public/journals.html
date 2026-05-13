@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 明細</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.btn-outline-primary{color:#6a3a8a;border-color:#6a3a8a}
+.btn-outline-primary:hover{background:#6a3a8a;border-color:#6a3a8a}
+.section-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.filter-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px}
+.filter-bar .form-group{display:flex;flex-direction:column;min-width:130px}
+.filter-bar label{font-size:11px;color:#888;margin-bottom:3px}
+table.journals-table{width:100%;font-size:13px}
+table.journals-table th{background:#faf8f5;font-weight:600;font-size:12px;color:#666;padding:9px 10px;border-bottom:2px solid #e8e2d5}
+table.journals-table td{padding:11px 10px;border-bottom:1px solid #f0ece4;vertical-align:top}
+table.journals-table tr:hover{background:#faf8f5;cursor:pointer}
+table.journals-table tr.reversed{opacity:.5;text-decoration:line-through}
+table.journals-table tr.is-reverse{background:#fff5f5}
+.type-chip{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:500}
+.type-chip.expense{background:#fdeae8;color:#a94a3a}
+.type-chip.income{background:#e8f5ed;color:#2a7a4a}
+.type-chip.transfer{background:#eaf0fa;color:#1a4a8a}
+.type-chip.reclassify{background:#f3eafa;color:#6a3a8a}
+.amount-cell{text-align:right;font-weight:700;font-family:'SF Mono','Consolas',monospace;font-size:14px}
+.amount-cell.expense{color:#c4453a}
+.amount-cell.income{color:#1a6a5a}
+.amount-cell.transfer{color:#1a4a8a}
+.amount-cell.reclassify{color:#6a3a8a}
+.target-row{font-size:11px;color:#888;margin-top:2px;padding-left:6px;border-left:2px solid #ddd}
+.account-flow{font-size:11px;color:#666}
+.account-flow .arr{color:#aaa;margin:0 4px}
+.edited-badge{background:#fff3cd;color:#856404;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px}
+.modal-tab-btn{flex:1;padding:10px;background:#f7f5f2;border:1px solid #e8e2d5;cursor:pointer;font-size:13px;font-weight:500}
+.modal-tab-btn.active{background:#6a3a8a;color:#fff;border-color:#6a3a8a}
+.modal-tab-btn:first-child{border-radius:8px 0 0 8px}
+.modal-tab-btn:last-child{border-radius:0 8px 8px 0}
+.modal-tab-btn:not(:first-child):not(:last-child){border-radius:0}
+.target-input-row{display:grid;grid-template-columns:1fr 130px 30px;gap:8px;margin-bottom:6px;align-items:center}
+.btn-icon{padding:2px 8px;font-size:12px;line-height:1.4;border-radius:4px}
+.empty-state{padding:60px 20px;text-align:center;color:#888}
+.detail-meta{font-size:12px;color:#666;line-height:1.8}
+.detail-meta strong{color:#1a1814;margin-right:8px}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
+      <a class="nav-link" href="/journals?new=1">記一筆</a>
+      <a class="nav-link active" href="/journals">明細</a>
+      <a class="nav-link" href="/reports">報表</a>
+      <a class="nav-link" href="/setup">主檔</a>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div class="section-card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">記帳明細</h5>
+      <button class="btn btn-primary btn-sm" onclick="openNew()">+ 記一筆</button>
+    </div>
+
+    <div class="filter-bar">
+      <div class="form-group"><label>日期 從</label><input type="date" class="form-control form-control-sm" id="fFrom"></div>
+      <div class="form-group"><label>日期 到</label><input type="date" class="form-control form-control-sm" id="fTo"></div>
+      <div class="form-group"><label>類型</label>
+        <select class="form-select form-select-sm" id="fType">
+          <option value="">全部</option>
+          <option value="expense">支出</option>
+          <option value="income">收入</option>
+          <option value="transfer">轉帳</option>
+          <option value="reclassify">重分類</option>
+        </select>
+      </div>
+      <div class="form-group"><label>科目</label>
+        <select class="form-select form-select-sm" id="fSubject"><option value="">全部</option></select>
+      </div>
+      <div class="form-group"><label>對象</label>
+        <select class="form-select form-select-sm" id="fCounterparty"><option value="">全部</option></select>
+      </div>
+      <div class="form-group"><label>帳戶</label>
+        <select class="form-select form-select-sm" id="fAccount"><option value="">全部</option></select>
+      </div>
+      <div class="form-group"><label>&nbsp;</label>
+        <button class="btn btn-outline-primary btn-sm" onclick="reload()">套用篩選</button>
+      </div>
+      <div class="form-group"><label>&nbsp;</label>
+        <button class="btn btn-outline-secondary btn-sm" onclick="clearFilters()">清除</button>
+      </div>
+    </div>
+
+    <div id="loading" class="text-center text-muted py-4">載入中...</div>
+    <div id="content" class="d-none" style="overflow-x:auto">
+      <table class="journals-table">
+        <thead><tr>
+          <th>日期</th><th>類型</th><th>科目 / 流向</th><th>摘要</th><th>對象</th>
+          <th class="text-end">金額</th><th>操作</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="text-muted small mt-2" id="rowCount"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ────── 新增 / 編輯 Modal ────── -->
+<div class="modal fade" id="journalModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="jmTitle">記一筆</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="jmEditedBanner" class="alert alert-warning d-none small mb-3"></div>
+        <div id="jmTabBar" style="display:flex;margin-bottom:18px">
+          <button class="modal-tab-btn active" data-type="expense" onclick="switchType('expense')">支出</button>
+          <button class="modal-tab-btn" data-type="income" onclick="switchType('income')">收入</button>
+          <button class="modal-tab-btn" data-type="transfer" onclick="switchType('transfer')">轉帳</button>
+          <button class="modal-tab-btn" data-type="reclassify" onclick="switchType('reclassify')">重分類</button>
+        </div>
+
+        <input type="hidden" id="jmEditId">
+        <input type="hidden" id="jmType" value="expense">
+
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label small">日期 *</label>
+            <input type="date" class="form-control" id="jmDate">
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small">摘要</label>
+            <input type="text" class="form-control" id="jmSummary" maxlength="200" placeholder="一句話描述這筆">
+          </div>
+        </div>
+
+        <!-- expense / income / transfer 共用區 -->
+        <div id="jmStandardBody" class="row g-3 mt-1">
+          <div class="col-md-6" id="jmSubjectWrap">
+            <label class="form-label small">會計科目 *</label>
+            <select class="form-select" id="jmSubject"></select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small">金額 *</label>
+            <input type="number" min="0.01" step="0.01" class="form-control" id="jmAmount">
+          </div>
+          <div class="col-md-6" id="jmOutWrap">
+            <label class="form-label small" id="jmOutLbl">付款帳戶 *</label>
+            <select class="form-select" id="jmOut"></select>
+          </div>
+          <div class="col-md-6 d-none" id="jmInWrap">
+            <label class="form-label small" id="jmInLbl">收款帳戶 *</label>
+            <select class="form-select" id="jmIn"></select>
+          </div>
+        </div>
+
+        <!-- reclassify 1:N 區 -->
+        <div id="jmReclassifyBody" class="d-none mt-1">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label small">原科目（要分出去的）*</label>
+              <select class="form-select" id="jmRcFrom"></select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">總金額 <span class="text-muted small">(自動加總)</span></label>
+              <input type="text" class="form-control" id="jmRcTotal" readonly>
+            </div>
+          </div>
+          <div class="mt-3">
+            <label class="form-label small d-flex justify-content-between align-items-center">
+              <span>分到以下科目 *（至少 1 筆）</span>
+              <button class="btn btn-outline-primary btn-icon" onclick="addTargetRow()">+ 加一筆</button>
+            </label>
+            <div id="jmTargets"></div>
+            <div class="form-text">同一筆訂金可同時抵「菜色 4101 / 服務費 4109 / 銷售折讓 4191」三個科目，每個科目自己一份金額</div>
+          </div>
+        </div>
+
+        <div class="row g-3 mt-1">
+          <div class="col-md-6">
+            <label class="form-label small">對象 (counterparty)</label>
+            <select class="form-select" id="jmCounterparty"><option value="">— 不指定 —</option></select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small">備註</label>
+            <input type="text" class="form-control" id="jmNote">
+          </div>
+        </div>
+
+        <div id="jmError" class="alert alert-danger small d-none mt-3"></div>
+      </div>
+      <div class="modal-footer justify-content-between">
+        <div>
+          <button type="button" class="btn btn-outline-danger btn-sm d-none" id="jmReverseBtn" onclick="confirmReverse()">↺ 反向沖銷</button>
+        </div>
+        <div>
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="button" class="btn btn-primary" id="jmSaveBtn" onclick="saveJournal()">儲存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ────── 詳情 Modal ────── -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">記錄詳情 #<span id="dtId"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="dtBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-primary" id="dtEditBtn">編輯</button>
+        <button type="button" class="btn btn-outline-danger" id="dtReverseBtn">↺ 反向</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const BOOK = 'NEST0001';
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault(); localStorage.clear(); location.href = '/';
+});
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const headers = { Authorization: 'Bearer ' + token, ...(opts.headers || {}) };
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function fmt(v) { return new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(parseFloat(v || 0)); }
+function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類' })[t] || t; }
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+
+// ── lookups 載入 + 快取 ────────────────────────────────────────
+const cache = { subjects: [], accounts: [], counterparties: [] };
+async function loadLookups() {
+  const [subj, acc, cp] = await Promise.all([
+    api(`/B/${BOOK}/subjects`),
+    api(`/B/${BOOK}/accounts`),
+    api(`/B/${BOOK}/counterparties`),
+  ]);
+  cache.subjects = subj.subjects || [];
+  cache.accounts = acc.accounts || [];
+  cache.counterparties = cp.counterparties || [];
+  // populate filter selects
+  fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
+  fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
+  fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
+  fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
+}
+function fillSelect(el, items, blankLabel) {
+  el.innerHTML = `<option value="">${blankLabel}</option>` + items.map((it) => `<option value="${it.value}">${esc(it.label)}</option>`).join('');
+}
+function subjectOptionsByType(parentTypeFilter) {
+  return cache.subjects
+    .filter((s) => !parentTypeFilter || parentTypeFilter.includes(s.parent_type))
+    .map((s) => `<option value="${s.id}" data-parent="${s.parent_type}">${esc(s.code || '')} ${esc(s.name)} (${s.parent_type})</option>`)
+    .join('');
+}
+function accountOptions() {
+  return cache.accounts.map((a) => `<option value="${a.id}">${esc(a.name)} (${a.type})</option>`).join('');
+}
+
+// ── list 載入 + render ─────────────────────────────────────────
+async function reload() {
+  $('loading').classList.remove('d-none');
+  $('content').classList.add('d-none');
+  const params = new URLSearchParams();
+  ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => {
+    const v = $(id).value;
+    if (v) params.set(({ fFrom: 'from', fTo: 'to', fType: 'type', fSubject: 'subject_id', fCounterparty: 'counterparty_id', fAccount: 'account_id' }[id]), v);
+  });
+  params.set('limit', '200');
+  try {
+    const r = await api(`/B/${BOOK}/journals?${params}`);
+    renderRows(r.journals || []);
+    $('rowCount').textContent = `共 ${r.count} 筆`;
+  } catch (e) {
+    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">載入失敗: ${esc(e.message)}</td></tr>`;
+  }
+  $('loading').classList.add('d-none');
+  $('content').classList.remove('d-none');
+}
+
+function renderRows(journals) {
+  if (!journals.length) {
+    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state">沒有符合條件的紀錄</td></tr>`;
+    return;
+  }
+  $('rows').innerHTML = journals.map((j) => {
+    const isReversed = !!j.reversed_by_id;
+    const isReverse = !!j.reverses_id;
+    const cls = (isReversed ? ' reversed' : '') + (isReverse ? ' is-reverse' : '');
+    const editedBadge = j.edit_count > 0 ? '<span class="edited-badge">已編輯 ' + j.edit_count + ' 次</span>' : '';
+    const reverseLabel = isReverse ? '<span class="badge bg-secondary me-1">反向</span>' : '';
+    const reversedLabel = isReversed ? '<span class="badge bg-secondary me-1">已沖銷</span>' : '';
+
+    let subjectCell;
+    if (j.type === 'reclassify') {
+      if (j.targets && j.targets.length > 0) {
+        subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${j.targets.length} 個科目`;
+        subjectCell += j.targets.map((t) => `<div class="target-row">${esc(t.target_subject_code || '')} ${esc(t.target_subject_name)} <strong>$${fmt(t.amount)}</strong></div>`).join('');
+      } else {
+        subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${esc(j.subject_code || '')} ${esc(j.subject_name || '')}`;
+      }
+    } else {
+      subjectCell = `<strong>${esc(j.subject_code || '')} ${esc(j.subject_name || '')}</strong>`;
+      const flow = [];
+      if (j.transfer_out_account_name) flow.push(esc(j.transfer_out_account_name));
+      if (j.transfer_in_account_name) flow.push(esc(j.transfer_in_account_name));
+      if (flow.length) subjectCell += `<div class="account-flow">${flow.join(' <span class="arr">→</span> ')}</div>`;
+    }
+
+    return `<tr class="${cls}" onclick="openDetail(${j.id})">
+      <td>${j.date}</td>
+      <td>${reverseLabel}${reversedLabel}<span class="type-chip ${j.type}">${typeName(j.type)}</span></td>
+      <td>${subjectCell}</td>
+      <td>${esc(j.summary || '')}${editedBadge}</td>
+      <td>${esc(j.counterparty_name || '')}</td>
+      <td class="amount-cell ${j.type}">$${fmt(j.amount)}</td>
+      <td onclick="event.stopPropagation()">
+        ${!isReversed && !isReverse ? `<button class="btn btn-outline-primary btn-icon" onclick="openEdit(${j.id})">✏️</button> ` : ''}
+        ${!isReversed && !isReverse ? `<button class="btn btn-outline-danger btn-icon" onclick="quickReverse(${j.id})">↺</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function clearFilters() {
+  ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => { $(id).value = ''; });
+  reload();
+}
+
+// ── new / edit modal ───────────────────────────────────────────
+const journalModal = new bootstrap.Modal($('journalModal'));
+
+function openNew() {
+  $('jmEditId').value = '';
+  $('jmTitle').textContent = '記一筆';
+  $('jmReverseBtn').classList.add('d-none');
+  $('jmEditedBanner').classList.add('d-none');
+  $('jmTabBar').style.pointerEvents = '';
+  $('jmTabBar').style.opacity = '';
+  $('jmDate').value = new Date().toISOString().slice(0, 10);
+  $('jmSummary').value = '';
+  $('jmAmount').value = '';
+  $('jmNote').value = '';
+  $('jmCounterparty').value = '';
+  $('jmTargets').innerHTML = '';
+  $('jmRcTotal').value = '0';
+  $('jmError').classList.add('d-none');
+  switchType('expense');
+  journalModal.show();
+}
+
+function switchType(t) {
+  $('jmType').value = t;
+  document.querySelectorAll('.modal-tab-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.type === t);
+  });
+  if (t === 'reclassify') {
+    $('jmStandardBody').classList.add('d-none');
+    $('jmReclassifyBody').classList.remove('d-none');
+    // populate rc-from select with all subjects
+    $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
+    if ($('jmTargets').children.length === 0) addTargetRow();
+  } else {
+    $('jmStandardBody').classList.remove('d-none');
+    $('jmReclassifyBody').classList.add('d-none');
+    // expense → t2/t3, income → t1/t5, transfer → t4
+    const filter = t === 'expense' ? ['t2', 't3'] : t === 'income' ? ['t1', 't5'] : ['t4'];
+    $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
+    $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+    $('jmIn').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+    if (t === 'expense') {
+      $('jmOutLbl').textContent = '付款帳戶 *';
+      $('jmOutWrap').classList.remove('d-none');
+      $('jmInWrap').classList.add('d-none');
+    } else if (t === 'income') {
+      $('jmOutWrap').classList.add('d-none');
+      $('jmInLbl').textContent = '收款帳戶 *';
+      $('jmInWrap').classList.remove('d-none');
+    } else { // transfer
+      $('jmOutLbl').textContent = '從（轉出）*';
+      $('jmInLbl').textContent = '到（轉入）*';
+      $('jmOutWrap').classList.remove('d-none');
+      $('jmInWrap').classList.remove('d-none');
+    }
+  }
+}
+
+function addTargetRow(presetSubjectId, presetAmount) {
+  const row = document.createElement('div');
+  row.className = 'target-input-row';
+  row.innerHTML = `
+    <select class="form-select form-select-sm jm-tg-subject">
+      <option value="">— 選科目 —</option>${subjectOptionsByType(null)}
+    </select>
+    <input type="number" min="0.01" step="0.01" class="form-control form-control-sm jm-tg-amount" placeholder="金額" oninput="recalcRcTotal()">
+    <button class="btn btn-outline-danger btn-icon" onclick="this.closest('.target-input-row').remove();recalcRcTotal()">✕</button>
+  `;
+  $('jmTargets').appendChild(row);
+  if (presetSubjectId) row.querySelector('.jm-tg-subject').value = presetSubjectId;
+  if (presetAmount) { row.querySelector('.jm-tg-amount').value = presetAmount; recalcRcTotal(); }
+}
+
+function recalcRcTotal() {
+  let sum = 0;
+  document.querySelectorAll('.jm-tg-amount').forEach((el) => { sum += parseFloat(el.value) || 0; });
+  $('jmRcTotal').value = sum.toFixed(2);
+}
+
+function collectFormPayload() {
+  const t = $('jmType').value;
+  const base = {
+    date: $('jmDate').value,
+    type: t,
+    summary: $('jmSummary').value.trim() || null,
+    note: $('jmNote').value.trim() || null,
+    counterparty_id: $('jmCounterparty').value ? Number($('jmCounterparty').value) : null,
+  };
+  if (t === 'reclassify') {
+    const from = $('jmRcFrom').value;
+    if (!from) throw new Error('請選原科目');
+    const targets = [];
+    document.querySelectorAll('#jmTargets .target-input-row').forEach((row) => {
+      const sid = row.querySelector('.jm-tg-subject').value;
+      const amt = parseFloat(row.querySelector('.jm-tg-amount').value);
+      if (sid && amt > 0) targets.push({ subject_id: Number(sid), amount: amt });
+    });
+    if (targets.length === 0) throw new Error('至少需要 1 個 target 科目');
+    return { ...base, reclassify_from_subject_id: Number(from), targets };
+  }
+  const subjectId = $('jmSubject').value;
+  const amount = parseFloat($('jmAmount').value);
+  if (!subjectId) throw new Error('請選會計科目');
+  if (!(amount > 0)) throw new Error('金額必須大於 0');
+  const payload = { ...base, subject_id: Number(subjectId), amount };
+  if (t === 'expense') payload.transfer_out_account_id = Number($('jmOut').value);
+  else if (t === 'income') payload.transfer_in_account_id = Number($('jmIn').value);
+  else if (t === 'transfer') {
+    payload.transfer_out_account_id = Number($('jmOut').value);
+    payload.transfer_in_account_id = Number($('jmIn').value);
+  }
+  if (t === 'expense' && !payload.transfer_out_account_id) throw new Error('請選付款帳戶');
+  if (t === 'income' && !payload.transfer_in_account_id) throw new Error('請選收款帳戶');
+  if (t === 'transfer' && (!payload.transfer_out_account_id || !payload.transfer_in_account_id)) throw new Error('請選轉出 + 轉入帳戶');
+  if (t === 'transfer' && payload.transfer_out_account_id === payload.transfer_in_account_id) throw new Error('轉出/轉入帳戶不能相同');
+  return payload;
+}
+
+async function saveJournal() {
+  $('jmError').classList.add('d-none');
+  let payload;
+  try {
+    payload = collectFormPayload();
+  } catch (e) {
+    $('jmError').textContent = e.message;
+    $('jmError').classList.remove('d-none');
+    return;
+  }
+  const editId = $('jmEditId').value;
+  const btn = $('jmSaveBtn');
+  btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if (editId) {
+      await api(`/B/${BOOK}/journals/${editId}`, { method: 'PATCH', body: payload });
+    } else {
+      await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
+    }
+    journalModal.hide();
+    reload();
+  } catch (e) {
+    $('jmError').textContent = e.message;
+    $('jmError').classList.remove('d-none');
+  } finally {
+    btn.disabled = false; btn.textContent = '儲存';
+  }
+}
+
+async function openEdit(id) {
+  try {
+    const r = await api(`/B/${BOOK}/journals/${id}`);
+    const j = r.journal;
+    if (j.reversed_by_id) { alert('此單已被反向沖銷，無法編輯'); return; }
+    if (j.reverses_id) { alert('反向沖銷單不能編輯'); return; }
+    $('jmEditId').value = id;
+    $('jmTitle').textContent = `編輯 #${id}`;
+    $('jmReverseBtn').classList.remove('d-none');
+    $('jmTabBar').style.pointerEvents = 'none';
+    $('jmTabBar').style.opacity = '.5';
+    if (j.edit_count > 0) {
+      $('jmEditedBanner').textContent = `此單已被編輯過 ${j.edit_count} 次（最後 ${j.edited_at}）`;
+      $('jmEditedBanner').classList.remove('d-none');
+    } else {
+      $('jmEditedBanner').classList.add('d-none');
+    }
+    switchType(j.type);
+    $('jmDate').value = j.date.slice(0, 10);
+    $('jmSummary').value = j.summary || '';
+    $('jmNote').value = j.note || '';
+    $('jmCounterparty').value = j.counterparty_id || '';
+    if (j.type === 'reclassify') {
+      $('jmRcFrom').value = j.reclassify_from_subject_id || '';
+      $('jmTargets').innerHTML = '';
+      if (j.targets && j.targets.length > 0) {
+        for (const t of j.targets) addTargetRow(t.target_subject_id, t.amount);
+      } else {
+        addTargetRow(j.subject_id, j.amount);
+      }
+      recalcRcTotal();
+    } else {
+      $('jmSubject').value = j.subject_id || '';
+      $('jmAmount').value = j.amount;
+      if (j.transfer_out_account_id) $('jmOut').value = j.transfer_out_account_id;
+      if (j.transfer_in_account_id) $('jmIn').value = j.transfer_in_account_id;
+    }
+    $('jmError').classList.add('d-none');
+    journalModal.show();
+  } catch (e) {
+    alert('載入失敗: ' + e.message);
+  }
+}
+
+async function confirmReverse() {
+  const id = $('jmEditId').value;
+  if (!id) return;
+  if (!confirm(`確認反向沖銷 #${id}？\n會寫入一筆方向相反的 journal，原 row 保留以利稽核。`)) return;
+  try {
+    await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' });
+    journalModal.hide();
+    reload();
+  } catch (e) { alert('反向失敗: ' + e.message); }
+}
+
+async function quickReverse(id) {
+  if (!confirm(`確認反向沖銷 #${id}？`)) return;
+  try {
+    await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' });
+    reload();
+  } catch (e) { alert('反向失敗: ' + e.message); }
+}
+
+// ── 詳情 modal ─────────────────────────────────────────────────
+const detailModal = new bootstrap.Modal($('detailModal'));
+async function openDetail(id) {
+  try {
+    const r = await api(`/B/${BOOK}/journals/${id}`);
+    const j = r.journal;
+    $('dtId').textContent = j.id;
+    let html = '<div class="detail-meta">';
+    html += `<div><strong>日期</strong>${j.date.slice(0,10)}</div>`;
+    html += `<div><strong>類型</strong><span class="type-chip ${j.type}">${typeName(j.type)}</span></div>`;
+    html += `<div><strong>金額</strong>$${fmt(j.amount)}</div>`;
+    if (j.type === 'reclassify') {
+      html += `<div><strong>原科目</strong>${esc(j.reclassify_from_subject_code||'')} ${esc(j.reclassify_from_subject_name||'')}</div>`;
+      if (j.targets && j.targets.length > 0) {
+        html += `<div><strong>分到 ${j.targets.length} 個科目</strong></div>`;
+        html += '<ul class="small mt-1 mb-2">';
+        for (const t of j.targets) html += `<li>${esc(t.target_subject_code||'')} ${esc(t.target_subject_name)} — $${fmt(t.amount)}</li>`;
+        html += '</ul>';
+      } else {
+        html += `<div><strong>目標科目</strong>${esc(j.subject_code||'')} ${esc(j.subject_name||'')}</div>`;
+      }
+    } else {
+      html += `<div><strong>科目</strong>${esc(j.subject_code||'')} ${esc(j.subject_name||'')}</div>`;
+      if (j.transfer_out_account_name) html += `<div><strong>付款帳戶</strong>${esc(j.transfer_out_account_name)}</div>`;
+      if (j.transfer_in_account_name) html += `<div><strong>收款帳戶</strong>${esc(j.transfer_in_account_name)}</div>`;
+    }
+    if (j.counterparty_name) html += `<div><strong>對象</strong>${esc(j.counterparty_name)}</div>`;
+    if (j.summary) html += `<div><strong>摘要</strong>${esc(j.summary)}</div>`;
+    if (j.note) html += `<div><strong>備註</strong>${esc(j.note)}</div>`;
+    if (j.external_source) html += `<div><strong>來源</strong>${esc(j.external_source)} / ${esc(j.external_id||'')}</div>`;
+    if (j.is_auto_posted) html += `<div><strong>由 webhook 自動入帳</strong>✓</div>`;
+    if (j.edit_count > 0) html += `<div><strong>編輯紀錄</strong>已編輯 ${j.edit_count} 次 (最後 ${j.edited_at})</div>`;
+    if (j.reversed_by_id) html += `<div class="text-danger"><strong>狀態</strong>已被 #${j.reversed_by_id} 反向沖銷</div>`;
+    if (j.reverses_id) html += `<div class="text-secondary"><strong>狀態</strong>本筆是 #${j.reverses_id} 的反向沖銷</div>`;
+    html += `<div class="text-muted small mt-2">建立於 ${j.created_at}</div>`;
+    html += '</div>';
+    $('dtBody').innerHTML = html;
+    const canModify = !j.reversed_by_id && !j.reverses_id;
+    $('dtEditBtn').style.display = canModify ? '' : 'none';
+    $('dtReverseBtn').style.display = canModify ? '' : 'none';
+    $('dtEditBtn').onclick = () => { detailModal.hide(); openEdit(id); };
+    $('dtReverseBtn').onclick = async () => {
+      if (!confirm(`確認反向沖銷 #${id}？`)) return;
+      try { await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' }); detailModal.hide(); reload(); }
+      catch (e) { alert('反向失敗: ' + e.message); }
+    };
+    detailModal.show();
+  } catch (e) {
+    alert('載入失敗: ' + e.message);
+  }
+}
+
+// ── boot ───────────────────────────────────────────────────────
+(async () => {
+  try {
+    await loadLookups();
+    await reload();
+    // 看是否從 nav 「記一筆」進來
+    const url = new URL(location.href);
+    if (url.searchParams.get('new') === '1') {
+      openNew();
+      history.replaceState({}, '', '/journals');
+    }
+  } catch (e) {
+    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">初始化失敗: ${esc(e.message)}</td></tr>`;
+  }
+})();
+</script>
+</body>
+</html>

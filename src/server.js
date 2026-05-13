@@ -31,7 +31,7 @@ const postingRoutes = require('./routes/posting');
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.8.0';
+const VERSION = '0.12.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // ── Redis ──────────────────────────────────────────────────────────
@@ -156,9 +156,11 @@ async function seedAdmin(pool) {
     await seedDefaultsForBook(client, bookId);
 
     await client.query('COMMIT');
-    console.log(`[seed] created admin (${email}) and book (NEST0001 / 花現鳥巢)`);
+    console.log(`[seed] created legacy admin (${email}) and book (NEST0001 / 花現鳥巢)`);
+    console.log('[seed] ℹ️  HR SSO 模式啟用後，此 admin 僅做為 LEGACY_EMAIL_LOGIN 緊急 backdoor 用');
+    console.log('[seed] ℹ️  日常登入請走 HR /attendance 設定的 cloud_access + emp_id + PIN');
     if (password === 'changeme') {
-      console.log('[seed] ⚠️  using default password "changeme" — call POST /auth/change-password to change it');
+      console.log('[seed] ⚠️  default password "changeme" 還沒改 — 上 production 前先設 INITIAL_ADMIN_PASSWORD env');
     }
   } catch (e) {
     await client.query('ROLLBACK');
@@ -217,7 +219,7 @@ app.get('/api-info', (req, res) => {
   res.json({
     name: 'bookkeeping-cloud',
     version: VERSION,
-    stage: 'Phase A: web UI (login + dashboard + pending review)',
+    stage: 'HR SSO mode: login proxies LEO HR /api/auth/login, book_members auto from cloud_access',
     endpoints: {
       health: 'GET /health',
       auth: ['POST /auth/register', 'POST /auth/login', 'GET /auth/me', 'POST /auth/change-password'],
@@ -239,8 +241,10 @@ app.get('/api-info', (req, res) => {
         'PATCH /B/:bookCode/counterparties/:id',
       ],
       journals: [
-        'POST /B/:bookCode/journals', 'GET /B/:bookCode/journals',
-        'GET /B/:bookCode/journals/:id',
+        'POST /B/:bookCode/journals (支援 reclassify 1:N: body.targets[])',
+        'GET /B/:bookCode/journals', 'GET /B/:bookCode/journals/:id',
+        'PATCH /B/:bookCode/journals/:id (M1 1d 修改 + 自動重算餘額)',
+        'DELETE /B/:bookCode/journals/:id (soft delete via reverse)',
       ],
       reports: [
         'GET /B/:bookCode/reports/dashboard',
@@ -264,7 +268,10 @@ app.get('/api-info', (req, res) => {
 app.get('/', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.get('/dashboard', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
 app.get('/pending', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pending.html')));
-// future Phase B/C/D/E pages will go in PUBLIC_DIR
+app.get('/journals', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'journals.html')));
+app.get('/setup', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'setup.html')));
+app.get('/reports', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reports.html')));
+// future Phase E (settings) pages will go in PUBLIC_DIR
 
 app.use('/auth', authRoutes);
 app.use('/', booksRoutes);

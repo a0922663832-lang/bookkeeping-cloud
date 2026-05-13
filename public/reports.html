@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 報表</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.btn-outline-primary{color:#6a3a8a;border-color:#6a3a8a}
+.btn-outline-primary:hover{background:#6a3a8a;border-color:#6a3a8a;color:#fff}
+.section-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.05);margin-bottom:20px}
+.report-tabs{display:flex;gap:0;border-bottom:2px solid #e8e2d5;margin-bottom:20px}
+.report-tab{padding:12px 24px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;color:#888;font-weight:500}
+.report-tab.active{color:#6a3a8a;border-bottom-color:#6a3a8a}
+.report-tab:hover{color:#6a3a8a}
+.filter-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px}
+.filter-bar .form-group{display:flex;flex-direction:column;min-width:130px}
+.filter-bar label{font-size:11px;color:#888;margin-bottom:3px}
+.kpi-card{background:#fff;border-radius:14px;padding:20px 22px;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}
+.kpi-label{font-size:13px;color:#888;margin-bottom:6px}
+.kpi-value{font-size:26px;font-weight:700;color:#1a1814;font-family:'SF Mono','Consolas',monospace}
+.kpi-value.pos{color:#1a6a5a}
+.kpi-value.neg{color:#c4453a}
+.kpi-value.purple{color:#6a3a8a}
+.kpi-sub{font-size:11px;color:#888;margin-top:4px}
+
+table.rpt-table{width:100%;font-size:13px}
+table.rpt-table th{background:#faf8f5;font-weight:600;font-size:12px;color:#666;padding:9px 10px;border-bottom:2px solid #e8e2d5}
+table.rpt-table td{padding:9px 10px;border-bottom:1px solid #f0ece4}
+table.rpt-table tr.total-row{background:#f7f5f2;font-weight:700}
+table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
+.amount-cell{text-align:right;font-weight:600;font-family:'SF Mono','Consolas',monospace}
+.amount-cell.pos{color:#1a6a5a}
+.amount-cell.neg{color:#c4453a}
+.percent-cell{text-align:right;color:#888;font-size:12px}
+
+.subj-type-chip{display:inline-block;padding:1px 7px;border-radius:6px;font-size:10px;font-weight:600;margin-right:5px}
+.subj-type-chip.t1{background:#e8f5ed;color:#2a7a4a}
+.subj-type-chip.t2{background:#fdeae8;color:#a94a3a}
+.subj-type-chip.t3{background:#fff3cd;color:#856404}
+.cp-type-chip{display:inline-block;padding:1px 7px;border-radius:6px;font-size:10px;margin-right:5px}
+.cp-type-chip.income{background:#e8f5ed;color:#2a7a4a}
+.cp-type-chip.expense{background:#fdeae8;color:#a94a3a}
+.cp-type-chip.both{background:#eaf0fa;color:#1a4a8a}
+
+.section-title{font-size:15px;font-weight:600;margin-bottom:12px;color:#1a1814}
+.section-title em{color:#888;font-weight:400;font-size:12px;font-style:normal;margin-left:6px}
+.bar-fill{height:6px;background:#f0ece4;border-radius:3px;overflow:hidden;margin-top:3px}
+.bar-fill .bar-inner{height:100%;background:linear-gradient(90deg,#6a3a8a,#4a2a6a);transition:width .3s}
+.bar-fill .bar-inner.income{background:linear-gradient(90deg,#1a6a5a,#0a4a3a)}
+.bar-fill .bar-inner.expense{background:linear-gradient(90deg,#c4453a,#902525)}
+
+.empty-state{padding:50px 20px;text-align:center;color:#888}
+
+@media (max-width:768px){.kpi-value{font-size:22px}.kpi-label{font-size:12px}}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
+      <a class="nav-link" href="/journals?new=1">記一筆</a>
+      <a class="nav-link" href="/journals">明細</a>
+      <a class="nav-link active" href="/reports">報表</a>
+      <a class="nav-link" href="/setup">主檔</a>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div class="report-tabs">
+    <div class="report-tab active" data-pane="monthly" onclick="switchPane('monthly')">📅 月報</div>
+    <div class="report-tab" data-pane="yearly" onclick="switchPane('yearly')">📊 年報</div>
+    <div class="report-tab" data-pane="counterparties" onclick="switchPane('counterparties')">👥 對象報表</div>
+  </div>
+
+  <!-- ────── Monthly pane ────── -->
+  <div id="pane-monthly" class="pane">
+    <div class="section-card">
+      <div class="filter-bar">
+        <div class="form-group"><label>月份</label><input type="month" class="form-control form-control-sm" id="mYear"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline-primary btn-sm" onclick="loadMonthly()">查詢</button></div>
+        <div class="form-group ms-auto"><label>&nbsp;</label><button class="btn btn-outline-secondary btn-sm" onclick="exportMonthlyCsv()">📥 匯出 CSV</button></div>
+      </div>
+      <div id="mLoading" class="text-center text-muted py-4">載入中...</div>
+      <div id="mContent" class="d-none">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">收入合計</div><div class="kpi-value pos" id="mKpiIncome">—</div><div class="kpi-sub" id="mKpiIncomeSub">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">成本合計</div><div class="kpi-value neg" id="mKpiCost">—</div><div class="kpi-sub" id="mKpiCostSub">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">費用合計</div><div class="kpi-value neg" id="mKpiExpense">—</div><div class="kpi-sub" id="mKpiExpenseSub">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">月損益</div><div class="kpi-value purple" id="mKpiProfit">—</div><div class="kpi-sub" id="mKpiCnt">—</div></div></div>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="section-title">收入細項 <em>(t1)</em></div>
+            <table class="rpt-table"><thead><tr><th>科目</th><th class="text-end">金額</th><th class="text-end">占比</th></tr></thead><tbody id="mIncomeBody"></tbody></table>
+          </div>
+          <div class="col-md-6">
+            <div class="section-title">費用細項 <em>(t3)</em></div>
+            <table class="rpt-table"><thead><tr><th>科目</th><th class="text-end">金額</th><th class="text-end">占比</th></tr></thead><tbody id="mExpenseBody"></tbody></table>
+          </div>
+          <div class="col-md-6">
+            <div class="section-title">成本細項 <em>(t2)</em></div>
+            <table class="rpt-table"><thead><tr><th>科目</th><th class="text-end">金額</th><th class="text-end">占比</th></tr></thead><tbody id="mCostBody"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────── Yearly pane ────── -->
+  <div id="pane-yearly" class="pane d-none">
+    <div class="section-card">
+      <div class="filter-bar">
+        <div class="form-group"><label>年份</label><input type="number" min="2020" max="2099" class="form-control form-control-sm" id="yYear" style="width:120px"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline-primary btn-sm" onclick="loadYearly()">查詢</button></div>
+        <div class="form-group ms-auto"><label>&nbsp;</label><button class="btn btn-outline-secondary btn-sm" onclick="exportYearlyCsv()">📥 匯出 CSV</button></div>
+      </div>
+      <div id="yLoading" class="text-center text-muted py-4">載入中...</div>
+      <div id="yContent" class="d-none">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年收入</div><div class="kpi-value pos" id="yKpiIncome">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年成本</div><div class="kpi-value neg" id="yKpiCost">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年費用</div><div class="kpi-value neg" id="yKpiExpense">—</div></div></div>
+          <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年損益</div><div class="kpi-value purple" id="yKpiProfit">—</div></div></div>
+        </div>
+        <div class="section-card" style="margin-bottom:0;margin-top:18px;padding:18px">
+          <div class="section-title">12 月趨勢</div>
+          <canvas id="yTrendChart" height="80"></canvas>
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-md-4">
+            <div class="section-card" style="height:100%">
+              <div class="section-title">收入分類占比 <em>(t1)</em></div>
+              <canvas id="yIncomePie" height="180"></canvas>
+              <div id="yIncomeLegend" class="mt-3" style="font-size:12px"></div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="section-card" style="height:100%">
+              <div class="section-title">成本分類占比 <em>(t2)</em></div>
+              <canvas id="yCostPie" height="180"></canvas>
+              <div id="yCostLegend" class="mt-3" style="font-size:12px"></div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="section-card" style="height:100%">
+              <div class="section-title">費用分類占比 <em>(t3)</em></div>
+              <canvas id="yExpensePie" height="180"></canvas>
+              <div id="yExpenseLegend" class="mt-3" style="font-size:12px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────── Counterparties pane ────── -->
+  <div id="pane-counterparties" class="pane d-none">
+    <div class="section-card">
+      <div class="filter-bar">
+        <div class="form-group"><label>從</label><input type="date" class="form-control form-control-sm" id="cFrom"></div>
+        <div class="form-group"><label>到</label><input type="date" class="form-control form-control-sm" id="cTo"></div>
+        <div class="form-group"><label>類型</label>
+          <select class="form-select form-select-sm" id="cType">
+            <option value="">全部</option>
+            <option value="expense">廠商（支出）</option>
+            <option value="income">客戶（收入）</option>
+            <option value="both">雙向</option>
+          </select>
+        </div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline-primary btn-sm" onclick="loadCounterparties()">查詢</button></div>
+        <div class="form-group ms-auto"><label>&nbsp;</label><button class="btn btn-outline-secondary btn-sm" onclick="exportCpCsv()">📥 匯出 CSV</button></div>
+      </div>
+      <div id="cLoading" class="text-center text-muted py-4">載入中...</div>
+      <div id="cContent" class="d-none">
+        <div class="row g-3 mb-3">
+          <div class="col-md-4"><div class="kpi-card"><div class="kpi-label">交易對象數</div><div class="kpi-value purple" id="cKpiCount">—</div></div></div>
+          <div class="col-md-4"><div class="kpi-card"><div class="kpi-label">總收入</div><div class="kpi-value pos" id="cKpiIncome">—</div></div></div>
+          <div class="col-md-4"><div class="kpi-card"><div class="kpi-label">總支出</div><div class="kpi-value neg" id="cKpiExpense">—</div></div></div>
+        </div>
+        <table class="rpt-table">
+          <thead><tr>
+            <th>類型</th><th>名稱</th><th>類別</th>
+            <th class="text-end">收入</th><th class="text-end">支出</th><th class="text-end">淨額</th>
+            <th class="text-end">交易數</th>
+          </tr></thead>
+          <tbody id="cBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const BOOK = 'NEST0001';
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault(); localStorage.clear(); location.href = '/';
+});
+
+const $ = (id) => document.getElementById(id);
+async function api(path) {
+  const r = await fetch(path, { headers: { Authorization: 'Bearer ' + token } });
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+function fmt(v) { return new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(parseFloat(v || 0)); }
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+function downloadCsv(filename, rows) {
+  const csv = rows.map((r) => r.map((c) => {
+    if (c == null) return '';
+    const s = String(c);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
+}
+
+function switchPane(p) {
+  document.querySelectorAll('.report-tab').forEach((el) => el.classList.toggle('active', el.dataset.pane === p));
+  document.querySelectorAll('.pane').forEach((el) => el.classList.toggle('d-none', el.id !== 'pane-' + p));
+  if (p === 'monthly' && !loaded.monthly) loadMonthly();
+  if (p === 'yearly' && !loaded.yearly) loadYearly();
+  if (p === 'counterparties' && !loaded.counterparties) loadCounterparties();
+}
+
+const loaded = { monthly: false, yearly: false, counterparties: false };
+let monthlyData = null, yearlyData = null, cpData = null;
+
+// ──────── Monthly ────────
+async function loadMonthly() {
+  const v = $('mYear').value;
+  if (!v) return;
+  const [y, m] = v.split('-');
+  $('mLoading').classList.remove('d-none');
+  $('mContent').classList.add('d-none');
+  try {
+    const r = await api(`/B/${BOOK}/reports/monthly?year=${y}&month=${parseInt(m, 10)}`);
+    monthlyData = r;
+    renderMonthly(r);
+    loaded.monthly = true;
+  } catch (e) {
+    $('mLoading').innerHTML = `<div class="text-danger">載入失敗: ${esc(e.message)}</div>`;
+    return;
+  }
+  $('mLoading').classList.add('d-none');
+  $('mContent').classList.remove('d-none');
+}
+function renderMonthly(r) {
+  $('mKpiIncome').textContent = '$' + fmt(r.income.total);
+  $('mKpiCost').textContent = '$' + fmt(r.cost.total);
+  $('mKpiExpense').textContent = '$' + fmt(r.expense.total);
+  const profit = parseFloat(r.profit);
+  const profitEl = $('mKpiProfit');
+  profitEl.textContent = '$' + fmt(profit);
+  profitEl.className = 'kpi-value ' + (profit >= 0 ? 'pos' : 'neg');
+  $('mKpiIncomeSub').textContent = `${r.income.by_subject.length} 個科目`;
+  $('mKpiCostSub').textContent = `${r.cost.by_subject.length} 個科目`;
+  $('mKpiExpenseSub').textContent = `${r.expense.by_subject.length} 個科目`;
+  $('mKpiCnt').textContent = `${r.transaction_count} 筆交易`;
+  renderBreakdownTable('mIncomeBody', r.income.by_subject, r.income.total, 't1', 'pos');
+  renderBreakdownTable('mCostBody', r.cost.by_subject, r.cost.total, 't2', 'neg');
+  renderBreakdownTable('mExpenseBody', r.expense.by_subject, r.expense.total, 't3', 'neg');
+}
+function renderBreakdownTable(bodyId, rows, total, tClass, amountClass) {
+  const tot = parseFloat(total) || 0;
+  if (rows.length === 0) { $(bodyId).innerHTML = '<tr><td colspan="3" class="text-center text-muted py-3">無資料</td></tr>'; return; }
+  $(bodyId).innerHTML = rows.map((row) => {
+    const a = parseFloat(row.amount);
+    const pct = tot > 0 ? (a / tot * 100).toFixed(1) : '0.0';
+    return `<tr>
+      <td><code>${esc(row.code || '')}</code> ${esc(row.name)}</td>
+      <td class="amount-cell ${amountClass}">$${fmt(a)}</td>
+      <td class="percent-cell">${pct}%<div class="bar-fill"><div class="bar-inner ${amountClass === 'pos' ? 'income' : 'expense'}" style="width:${pct}%"></div></div></td>
+    </tr>`;
+  }).join('') + `
+    <tr class="total-row"><td>合計</td><td class="amount-cell ${amountClass}">$${fmt(tot)}</td><td class="percent-cell">100%</td></tr>
+  `;
+}
+function exportMonthlyCsv() {
+  if (!monthlyData) { alert('請先查詢'); return; }
+  const r = monthlyData;
+  const rows = [['月報', `${r.year}-${String(r.month).padStart(2,'0')}`], [], ['類別','科目代碼','科目名稱','金額']];
+  for (const x of r.income.by_subject) rows.push(['收入', x.code || '', x.name, x.amount]);
+  rows.push(['', '', '收入合計', r.income.total]);
+  for (const x of r.cost.by_subject) rows.push(['成本', x.code || '', x.name, x.amount]);
+  rows.push(['', '', '成本合計', r.cost.total]);
+  for (const x of r.expense.by_subject) rows.push(['費用', x.code || '', x.name, x.amount]);
+  rows.push(['', '', '費用合計', r.expense.total]);
+  rows.push([]); rows.push(['', '', '損益', r.profit]); rows.push(['', '', '交易筆數', r.transaction_count]);
+  downloadCsv(`月報_${r.year}-${String(r.month).padStart(2,'0')}.csv`, rows);
+}
+
+// ──────── Yearly ────────
+let yTrendChart, yIncomePie, yCostPie, yExpensePie;
+async function loadYearly() {
+  const y = $('yYear').value;
+  if (!y) return;
+  $('yLoading').classList.remove('d-none');
+  $('yContent').classList.add('d-none');
+  try {
+    const r = await api(`/B/${BOOK}/reports/yearly?year=${y}`);
+    yearlyData = r;
+    renderYearly(r);
+    loaded.yearly = true;
+  } catch (e) {
+    $('yLoading').innerHTML = `<div class="text-danger">載入失敗: ${esc(e.message)}</div>`;
+    return;
+  }
+  $('yLoading').classList.add('d-none');
+  $('yContent').classList.remove('d-none');
+}
+function renderYearly(r) {
+  $('yKpiIncome').textContent = '$' + fmt(r.summary.total_income);
+  $('yKpiCost').textContent = '$' + fmt(r.summary.total_cost);
+  $('yKpiExpense').textContent = '$' + fmt(r.summary.total_expense);
+  const profit = parseFloat(r.summary.total_profit);
+  const pEl = $('yKpiProfit');
+  pEl.textContent = '$' + fmt(profit);
+  pEl.className = 'kpi-value ' + (profit >= 0 ? 'pos' : 'neg');
+
+  // 12 月趨勢 bar+line chart
+  if (yTrendChart) yTrendChart.destroy();
+  yTrendChart = new Chart($('yTrendChart'), {
+    type: 'bar',
+    data: {
+      labels: r.monthly.map((m) => m.month + '月'),
+      datasets: [
+        { type: 'bar', label: '收入', data: r.monthly.map((m) => parseFloat(m.income)), backgroundColor: 'rgba(26,106,90,.6)', borderColor: '#1a6a5a', borderWidth: 1 },
+        { type: 'bar', label: '支出', data: r.monthly.map((m) => parseFloat(m.expense)), backgroundColor: 'rgba(196,69,58,.6)', borderColor: '#c4453a', borderWidth: 1 },
+        { type: 'line', label: '利潤', data: r.monthly.map((m) => parseFloat(m.profit)), borderColor: '#6a3a8a', backgroundColor: 'rgba(106,58,138,.1)', borderWidth: 2, tension: 0.3, fill: false },
+      ],
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, ticks: { callback: (v) => '$' + v.toLocaleString() } } } },
+  });
+
+  renderPie(yIncomePie, 'yIncomePie', 'yIncomeLegend', r.income_breakdown, ['#1a6a5a', '#2a7a4a', '#3a8a5a', '#5aa86a', '#7ac67a', '#9ad48a', '#bae29a']);
+  renderPie(yCostPie, 'yCostPie', 'yCostLegend', r.cost_breakdown, ['#c4453a', '#a94a3a', '#902525', '#b35434', '#d97550', '#e89060', '#f1ac80']);
+  renderPie(yExpensePie, 'yExpensePie', 'yExpenseLegend', r.expense_breakdown, ['#856404', '#a07030', '#bf8b3c', '#d5a04f', '#e8b863', '#f3cc7b', '#fae099']);
+}
+function renderPie(prev, canvasId, legendId, rows, colors) {
+  if (prev) prev.destroy();
+  const c = $(canvasId);
+  if (!rows.length) {
+    c.getContext('2d').clearRect(0, 0, c.width, c.height);
+    $(legendId).innerHTML = '<div class="text-muted text-center py-3">無資料</div>';
+    return null;
+  }
+  // assign colors
+  const cols = rows.map((_, i) => colors[i % colors.length]);
+  const chart = new Chart(c, {
+    type: 'doughnut',
+    data: { labels: rows.map((r) => `${r.code || ''} ${r.name}`), datasets: [{ data: rows.map((r) => parseFloat(r.amount)), backgroundColor: cols, borderColor: '#fff', borderWidth: 2 }] },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+  $(legendId).innerHTML = rows.map((r, i) => `
+    <div style="display:flex;align-items:center;gap:6px;padding:3px 0">
+      <span style="width:10px;height:10px;background:${cols[i]};border-radius:2px"></span>
+      <span style="flex:1"><code>${esc(r.code || '')}</code> ${esc(r.name)}</span>
+      <span class="text-muted">${r.percent}%</span>
+    </div>
+  `).join('');
+  return chart;
+}
+// keep refs to allow destroy
+(function patchPie() {
+  const orig = renderPie;
+  window.renderPie = function (prev, id, legId, rows, cols) {
+    const chart = orig(prev, id, legId, rows, cols);
+    if (id === 'yIncomePie') yIncomePie = chart;
+    if (id === 'yCostPie') yCostPie = chart;
+    if (id === 'yExpensePie') yExpensePie = chart;
+    return chart;
+  };
+})();
+function exportYearlyCsv() {
+  if (!yearlyData) { alert('請先查詢'); return; }
+  const r = yearlyData;
+  const rows = [['年報', r.year], [], ['月份','收入','支出','利潤']];
+  r.monthly.forEach((m) => rows.push([m.month, m.income, m.expense, m.profit]));
+  rows.push(['', '', '', '']);
+  rows.push(['全年合計', r.summary.total_income, r.summary.total_expense, r.summary.total_profit]);
+  rows.push([]);
+  rows.push(['收入分類', '代碼', '名稱', '金額', '占比']);
+  r.income_breakdown.forEach((x) => rows.push(['t1', x.code || '', x.name, x.amount, x.percent + '%']));
+  rows.push(['成本分類', '代碼', '名稱', '金額', '占比']);
+  r.cost_breakdown.forEach((x) => rows.push(['t2', x.code || '', x.name, x.amount, x.percent + '%']));
+  rows.push(['費用分類', '代碼', '名稱', '金額', '占比']);
+  r.expense_breakdown.forEach((x) => rows.push(['t3', x.code || '', x.name, x.amount, x.percent + '%']));
+  downloadCsv(`年報_${r.year}.csv`, rows);
+}
+
+// ──────── Counterparties ────────
+async function loadCounterparties() {
+  const from = $('cFrom').value, to = $('cTo').value;
+  if (!from || !to) {
+    if (loaded.counterparties) return;
+    // 預設給最近 30 天
+    const now = new Date();
+    const ago30 = new Date(now); ago30.setDate(now.getDate() - 30);
+    $('cFrom').value = ago30.toISOString().slice(0, 10);
+    $('cTo').value = now.toISOString().slice(0, 10);
+    return loadCounterparties();
+  }
+  $('cLoading').classList.remove('d-none');
+  $('cContent').classList.add('d-none');
+  try {
+    const r = await api(`/B/${BOOK}/reports/counterparties?from=${from}&to=${to}`);
+    cpData = r;
+    renderCounterparties(r);
+    loaded.counterparties = true;
+  } catch (e) {
+    $('cLoading').innerHTML = `<div class="text-danger">載入失敗: ${esc(e.message)}</div>`;
+    return;
+  }
+  $('cLoading').classList.add('d-none');
+  $('cContent').classList.remove('d-none');
+}
+function renderCounterparties(r) {
+  const filter = $('cType').value;
+  const rows = (r.counterparties || []).filter((c) => !filter || c.type === filter);
+  let sumIncome = 0, sumExpense = 0;
+  rows.forEach((c) => { sumIncome += parseFloat(c.income_total || 0); sumExpense += parseFloat(c.expense_total || 0); });
+  $('cKpiCount').textContent = rows.length;
+  $('cKpiIncome').textContent = '$' + fmt(sumIncome);
+  $('cKpiExpense').textContent = '$' + fmt(sumExpense);
+  if (rows.length === 0) {
+    $('cBody').innerHTML = '<tr><td colspan="7" class="empty-state">期間內無交易對象</td></tr>';
+    return;
+  }
+  $('cBody').innerHTML = rows.map((c) => {
+    const inc = parseFloat(c.income_total || 0);
+    const exp = parseFloat(c.expense_total || 0);
+    const net = inc - exp;
+    const typeLabel = c.type === 'income' ? '客戶' : c.type === 'expense' ? '廠商' : '雙向';
+    return `<tr>
+      <td><span class="cp-type-chip ${c.type}">${typeLabel}</span>${c.is_temporary ? '<span class="badge bg-warning text-dark" style="font-size:10px">臨時</span>' : ''}</td>
+      <td><strong>${esc(c.name)}</strong></td>
+      <td>${esc(c.category || '')}</td>
+      <td class="amount-cell ${inc > 0 ? 'pos' : ''}">${inc > 0 ? '$' + fmt(inc) : '—'}</td>
+      <td class="amount-cell ${exp > 0 ? 'neg' : ''}">${exp > 0 ? '$' + fmt(exp) : '—'}</td>
+      <td class="amount-cell ${net >= 0 ? 'pos' : 'neg'}">$${fmt(net)}</td>
+      <td class="amount-cell">${c.transaction_count}</td>
+    </tr>`;
+  }).join('');
+}
+function exportCpCsv() {
+  if (!cpData) { alert('請先查詢'); return; }
+  const r = cpData;
+  const filter = $('cType').value;
+  const rows = (r.counterparties || []).filter((c) => !filter || c.type === filter);
+  const out = [['對象報表', `${r.from} ~ ${r.to}`], [], ['類型','名稱','類別','統編','收入','支出','淨額','交易數']];
+  rows.forEach((c) => {
+    const inc = parseFloat(c.income_total || 0); const exp = parseFloat(c.expense_total || 0);
+    out.push([c.type, c.name, c.category || '', c.tax_id || '', inc, exp, inc - exp, c.transaction_count]);
+  });
+  downloadCsv(`對象報表_${r.from}_${r.to}.csv`, out);
+}
+$('cType').addEventListener('change', () => { if (cpData) renderCounterparties(cpData); });
+
+// ──────── boot ────────
+(function init() {
+  const now = new Date();
+  $('mYear').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  $('yYear').value = now.getFullYear();
+  loadMonthly();
+})();
+</script>
+</body>
+</html>

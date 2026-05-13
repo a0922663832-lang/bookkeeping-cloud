@@ -1,7 +1,9 @@
 // src/routes/journals.js
-// 記帳記錄 CRUD (M1 階段 1a).
+// 記帳記錄 CRUD.
 // 規格書 §3.2.7. 支援 4 種 type: expense / income / transfer / reclassify.
-// reclassify 1:N 映射 (訂金抵菜色+服務費) 是 v1.7 待補項,本階段先支援 1:1.
+// M1 階段 1a (v0.3): POST/GET/GET-by-id.
+// M1 階段 1c (v0.7): DELETE = reverse (soft delete via 反向 journal).
+// M1 階段 1d (v0.9, 2026-05-13): reclassify 1:N targets + PATCH /journals/:id.
 
 'use strict';
 
@@ -65,18 +67,190 @@ const SELECT_JOURNAL_WITH_JOINS = `
     LEFT JOIN ag_accounts ai ON ai.id = j.transfer_in_account_id
 `;
 
+// ── reclassify 1:N targets helpers ──────────────────────────────────
+async function fetchTargetsForJournal(client, journalId) {
+  const r = await client.query(
+    `SELECT jrt.id, jrt.target_subject_id, jrt.amount, jrt.display_order,
+            s.name AS target_subject_name, s.code AS target_subject_code
+       FROM journal_reclassify_targets jrt
+       JOIN subjects s ON s.id = jrt.target_subject_id
+      WHERE jrt.journal_id = $1
+      ORDER BY jrt.display_order, jrt.id`,
+    [journalId]
+  );
+  return r.rows;
+}
+
+async function fetchTargetsForJournals(journalIds) {
+  if (journalIds.length === 0) return new Map();
+  const r = await query(
+    `SELECT jrt.journal_id, jrt.id, jrt.target_subject_id, jrt.amount, jrt.display_order,
+            s.name AS target_subject_name, s.code AS target_subject_code
+       FROM journal_reclassify_targets jrt
+       JOIN subjects s ON s.id = jrt.target_subject_id
+      WHERE jrt.journal_id = ANY($1::bigint[])
+      ORDER BY jrt.journal_id, jrt.display_order, jrt.id`,
+    [journalIds]
+  );
+  const map = new Map();
+  for (const row of r.rows) {
+    if (!map.has(row.journal_id)) map.set(row.journal_id, []);
+    map.get(row.journal_id).push({
+      id: row.id,
+      target_subject_id: row.target_subject_id,
+      amount: row.amount,
+      display_order: row.display_order,
+      target_subject_name: row.target_subject_name,
+      target_subject_code: row.target_subject_code,
+    });
+  }
+  return map;
+}
+
+/**
+ * 驗 + 規範化 body.targets for reclassify 1:N.
+ * 回 { primarySubjectId, totalAmount, normalizedTargets }
+ *   - normalizedTargets: [{ target_subject_id, amount, display_order }, ...]
+ *   - 當 N=1 時 normalizedTargets 是空陣列 (single-target legacy 形式),
+ *     primary 仍是該 target.
+ *   - 當 N>=2 時 normalizedTargets 含全部 N 筆,primary = display_order=0 那筆.
+ */
+function normalizeReclassifyTargets(b, bookId) {
+  // 兩種輸入支援:
+  //  (a) targets: [{ subject_id, amount }, ...]   1:N 完整形式
+  //  (b) subject_id + amount                       legacy 1:1 形式
+  let targets = b.targets;
+  if (!targets || !Array.isArray(targets)) {
+    // 沒給 targets array → 走 legacy 1:1
+    if (!b.subject_id) throw Object.assign(new Error('subject_id required'), { status: 400 });
+    if (!(Number(b.amount) > 0)) throw Object.assign(new Error('amount must be > 0'), { status: 400 });
+    return {
+      primarySubjectId: Number(b.subject_id),
+      totalAmount: Number(b.amount),
+      normalizedTargets: [],  // empty = legacy single
+    };
+  }
+  if (targets.length === 0) {
+    throw Object.assign(new Error('targets array cannot be empty'), { status: 400 });
+  }
+  // Validate each
+  const norm = [];
+  let total = 0;
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    if (!t || !t.subject_id) throw Object.assign(new Error(`targets[${i}].subject_id required`), { status: 400 });
+    const amt = Number(t.amount);
+    if (!(amt > 0)) throw Object.assign(new Error(`targets[${i}].amount must be > 0`), { status: 400 });
+    norm.push({
+      target_subject_id: Number(t.subject_id),
+      amount: amt,
+      display_order: i,
+    });
+    total += amt;
+  }
+  // De-dupe primary key (target_subject_id)
+  const seen = new Set();
+  for (const t of norm) {
+    if (seen.has(t.target_subject_id)) {
+      throw Object.assign(new Error(`target subject_id ${t.target_subject_id} duplicated`), { status: 400 });
+    }
+    seen.add(t.target_subject_id);
+  }
+  // If body.amount is also given, must match SUM (allow 2-cent floating tolerance)
+  if (b.amount !== undefined && b.amount !== null) {
+    const declared = Number(b.amount);
+    if (Math.abs(declared - total) > 0.02) {
+      throw Object.assign(new Error(`amount mismatch: declared ${declared}, sum of targets ${total}`), { status: 400 });
+    }
+  }
+  if (norm.length === 1) {
+    // N=1 → legacy 形式
+    return {
+      primarySubjectId: norm[0].target_subject_id,
+      totalAmount: norm[0].amount,
+      normalizedTargets: [],
+    };
+  }
+  return {
+    primarySubjectId: norm[0].target_subject_id,  // primary = display_order=0
+    totalAmount: total,
+    normalizedTargets: norm,
+  };
+}
+
+async function insertChildTargets(client, journalId, targets) {
+  for (const t of targets) {
+    await client.query(
+      `INSERT INTO journal_reclassify_targets (journal_id, target_subject_id, amount, display_order)
+       VALUES ($1, $2, $3, $4)`,
+      [journalId, t.target_subject_id, t.amount, t.display_order]
+    );
+  }
+}
+
+// ── FK validation 用 helper（一次性 EXISTS 檢查） ──────────────────────
+async function validateFKs(client, bookId, opts) {
+  const { subjectIds = [], accountIds = [], counterpartyId = null } = opts;
+  if (subjectIds.length) {
+    const r = await client.query(
+      `SELECT COUNT(*)::int AS c FROM subjects WHERE id = ANY($1::bigint[]) AND book_id = $2`,
+      [subjectIds, bookId]
+    );
+    if (r.rows[0].c !== subjectIds.length) {
+      throw Object.assign(new Error('one or more subject_id not in this book'), { status: 400 });
+    }
+  }
+  if (accountIds.length) {
+    const r = await client.query(
+      `SELECT COUNT(*)::int AS c FROM ag_accounts WHERE id = ANY($1::bigint[]) AND book_id = $2`,
+      [accountIds, bookId]
+    );
+    if (r.rows[0].c !== accountIds.length) {
+      throw Object.assign(new Error('one or more account_id not in this book'), { status: 400 });
+    }
+  }
+  if (counterpartyId) {
+    const r = await client.query(
+      `SELECT 1 FROM counterparties WHERE id = $1 AND book_id = $2`,
+      [counterpartyId, bookId]
+    );
+    if (r.rows.length === 0) {
+      throw Object.assign(new Error('counterparty_id not in this book'), { status: 400 });
+    }
+  }
+}
+
+// ── 套用帳戶餘額變化（+/- direction）──────────────────────────────────
+async function applyBalanceDelta(client, bookId, type, outAcc, inAcc, amount, direction) {
+  const sign = direction === 'apply' ? 1 : -1;  // 'apply' or 'revert'
+  if (type === 'expense' || type === 'transfer') {
+    await client.query(
+      `UPDATE ag_accounts SET current_balance = current_balance - $1 * $2, updated_at = NOW()
+         WHERE id = $3 AND book_id = $4`,
+      [amount, sign, outAcc, bookId]
+    );
+  }
+  if (type === 'income' || type === 'transfer') {
+    await client.query(
+      `UPDATE ag_accounts SET current_balance = current_balance + $1 * $2, updated_at = NOW()
+         WHERE id = $3 AND book_id = $4`,
+      [amount, sign, inAcc, bookId]
+    );
+  }
+}
+
 // ── POST /B/:bookCode/journals ─────────────────────────────────────────
-// body: {
-//   date,                            // YYYY-MM-DD
-//   type,                            // expense / income / transfer / reclassify
-//   amount,                          // > 0
-//   subject_id,                      // (reclassify 時是 target)
-//   reclassify_from_subject_id?,     // reclassify 必填
-//   transfer_out_account_id?,        // expense / transfer 必填
-//   transfer_in_account_id?,         // income / transfer 必填
-//   counterparty_id?,
-//   summary?, note?
-// }
+// body:
+//   date, type, amount, counterparty_id?, summary?, note?
+//   --- per-type ---
+//   expense:    subject_id, transfer_out_account_id
+//   income:     subject_id, transfer_in_account_id
+//   transfer:   subject_id, transfer_out_account_id, transfer_in_account_id
+//   reclassify (1:1 legacy): subject_id, reclassify_from_subject_id, amount
+//   reclassify (1:N new):    reclassify_from_subject_id,
+//                            targets: [{ subject_id, amount }, ...]
+//                            (subject_id / amount on top level optional;
+//                             primary = targets[0], amount = sum(targets[*].amount))
 router.post(
   '/B/:bookCode/journals',
   loadBook,
@@ -85,69 +259,66 @@ router.post(
     const b = req.body || {};
     const date = b.date;
     const type = b.type;
-    const amount = Number(b.amount);
-    const subjectId = b.subject_id;
+    const counterpartyId = b.counterparty_id || null;
     const reclassifyFromSubjectId = b.reclassify_from_subject_id || null;
     const outAccountId = b.transfer_out_account_id || null;
     const inAccountId = b.transfer_in_account_id || null;
-    const counterpartyId = b.counterparty_id || null;
 
-    // ── 基本驗證 ────────────────────────────────────────────────
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ error: 'date required (YYYY-MM-DD)' });
     }
     if (!['expense', 'income', 'transfer', 'reclassify'].includes(type)) {
       return res.status(400).json({ error: 'type must be expense / income / transfer / reclassify' });
     }
-    if (!(amount > 0)) {
-      return res.status(400).json({ error: 'amount must be > 0' });
-    }
-    if (!subjectId) {
-      return res.status(400).json({ error: 'subject_id required' });
-    }
 
-    // ── type-specific 驗證 (DB CHECK constraint 也會擋,先在應用層擋 user friendly 訊息) ──
-    if (type === 'expense') {
-      if (!outAccountId) return res.status(400).json({ error: 'transfer_out_account_id required for expense' });
-      if (inAccountId) return res.status(400).json({ error: 'transfer_in_account_id must be null for expense' });
-      if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for expense' });
-    } else if (type === 'income') {
-      if (!inAccountId) return res.status(400).json({ error: 'transfer_in_account_id required for income' });
-      if (outAccountId) return res.status(400).json({ error: 'transfer_out_account_id must be null for income' });
-      if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for income' });
-    } else if (type === 'transfer') {
-      if (!outAccountId || !inAccountId) return res.status(400).json({ error: 'transfer_out_account_id and transfer_in_account_id both required for transfer' });
-      if (outAccountId === inAccountId) return res.status(400).json({ error: 'transfer accounts must differ' });
-      if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for transfer' });
-    } else if (type === 'reclassify') {
-      if (outAccountId || inAccountId) return res.status(400).json({ error: 'transfer accounts must be null for reclassify' });
-      if (!reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id required for reclassify' });
-      if (Number(reclassifyFromSubjectId) === Number(subjectId)) {
-        return res.status(400).json({ error: 'reclassify_from_subject_id must differ from subject_id' });
+    // ── Resolve (subject_id, amount, targets) by type ──────────────
+    let subjectId, amount, normalizedTargets = [];
+    if (type === 'reclassify') {
+      const r = normalizeReclassifyTargets(b, req.book.id);
+      subjectId = r.primarySubjectId;
+      amount = r.totalAmount;
+      normalizedTargets = r.normalizedTargets;
+      if (!reclassifyFromSubjectId) {
+        return res.status(400).json({ error: 'reclassify_from_subject_id required for reclassify' });
+      }
+      if (outAccountId || inAccountId) {
+        return res.status(400).json({ error: 'transfer accounts must be null for reclassify' });
+      }
+      // Check from != any target
+      const allTargets = normalizedTargets.length > 0
+        ? normalizedTargets.map((t) => t.target_subject_id)
+        : [subjectId];
+      if (allTargets.includes(Number(reclassifyFromSubjectId))) {
+        return res.status(400).json({ error: 'reclassify_from_subject_id must differ from every target subject_id' });
+      }
+    } else {
+      subjectId = Number(b.subject_id);
+      amount = Number(b.amount);
+      if (!subjectId) return res.status(400).json({ error: 'subject_id required' });
+      if (!(amount > 0)) return res.status(400).json({ error: 'amount must be > 0' });
+      if (type === 'expense') {
+        if (!outAccountId) return res.status(400).json({ error: 'transfer_out_account_id required for expense' });
+        if (inAccountId) return res.status(400).json({ error: 'transfer_in_account_id must be null for expense' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for expense' });
+      } else if (type === 'income') {
+        if (!inAccountId) return res.status(400).json({ error: 'transfer_in_account_id required for income' });
+        if (outAccountId) return res.status(400).json({ error: 'transfer_out_account_id must be null for income' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for income' });
+      } else if (type === 'transfer') {
+        if (!outAccountId || !inAccountId) return res.status(400).json({ error: 'transfer_out_account_id and transfer_in_account_id both required for transfer' });
+        if (outAccountId === inAccountId) return res.status(400).json({ error: 'transfer accounts must differ' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for transfer' });
       }
     }
 
-    // ── 在 transaction 內 INSERT + 更新帳戶餘額 ──────────────────
     const result = await withTransaction(async (client) => {
-      // 先驗 FK 都在同一 book (避免跨 book 引用).
-      // 用 EXISTS + ::bigint cast 避免 pg "could not determine data type" 對 NULL parameter.
-      const fkCheck = await client.query(
-        `SELECT
-           EXISTS (SELECT 1 FROM subjects WHERE id = $1::bigint AND book_id = $6::bigint) AS s_ok,
-           ($2::bigint IS NULL OR EXISTS (SELECT 1 FROM subjects WHERE id = $2::bigint AND book_id = $6::bigint)) AS sf_ok,
-           ($3::bigint IS NULL OR EXISTS (SELECT 1 FROM ag_accounts WHERE id = $3::bigint AND book_id = $6::bigint)) AS ao_ok,
-           ($4::bigint IS NULL OR EXISTS (SELECT 1 FROM ag_accounts WHERE id = $4::bigint AND book_id = $6::bigint)) AS ai_ok,
-           ($5::bigint IS NULL OR EXISTS (SELECT 1 FROM counterparties WHERE id = $5::bigint AND book_id = $6::bigint)) AS cp_ok`,
-        [subjectId, reclassifyFromSubjectId, outAccountId, inAccountId, counterpartyId, req.book.id]
-      );
-      const fk = fkCheck.rows[0];
-      if (!fk.s_ok) throw Object.assign(new Error('subject_id not in this book'), { status: 400 });
-      if (!fk.sf_ok) throw Object.assign(new Error('reclassify_from_subject_id not in this book'), { status: 400 });
-      if (!fk.ao_ok) throw Object.assign(new Error('transfer_out_account_id not in this book'), { status: 400 });
-      if (!fk.ai_ok) throw Object.assign(new Error('transfer_in_account_id not in this book'), { status: 400 });
-      if (!fk.cp_ok) throw Object.assign(new Error('counterparty_id not in this book'), { status: 400 });
+      const subjectIds = [subjectId];
+      if (reclassifyFromSubjectId) subjectIds.push(Number(reclassifyFromSubjectId));
+      for (const t of normalizedTargets) subjectIds.push(t.target_subject_id);
+      const accountIds = [outAccountId, inAccountId].filter(Boolean).map(Number);
+      await validateFKs(client, req.book.id, { subjectIds, accountIds, counterpartyId });
 
-      const insertRes = await client.query(
+      const ins = await client.query(
         `INSERT INTO journal_logs (
            book_id, date, type, amount,
            subject_id, reclassify_from_subject_id,
@@ -164,25 +335,14 @@ router.post(
           req.user.id,
         ]
       );
-      const journal = insertRes.rows[0];
+      const journal = ins.rows[0];
 
-      // 更新帳戶餘額 (reclassify 不動)
-      if (type === 'expense' || type === 'transfer') {
-        await client.query(
-          `UPDATE ag_accounts SET current_balance = current_balance - $1, updated_at = NOW()
-             WHERE id = $2 AND book_id = $3`,
-          [amount, outAccountId, req.book.id]
-        );
-      }
-      if (type === 'income' || type === 'transfer') {
-        await client.query(
-          `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
-             WHERE id = $2 AND book_id = $3`,
-          [amount, inAccountId, req.book.id]
-        );
+      if (type === 'reclassify' && normalizedTargets.length > 0) {
+        await insertChildTargets(client, journal.id, normalizedTargets);
       }
 
-      // counterparty promote_count + 1
+      await applyBalanceDelta(client, req.book.id, type, outAccountId, inAccountId, amount, 'apply');
+
       if (counterpartyId) {
         await client.query(
           `UPDATE counterparties SET promote_count = promote_count + 1, updated_at = NOW()
@@ -191,6 +351,7 @@ router.post(
         );
       }
 
+      journal.targets = await fetchTargetsForJournal(client, journal.id);
       return journal;
     });
 
@@ -214,7 +375,13 @@ router.get('/B/:bookCode/journals', loadBook, asyncHandler(async (req, res) => {
     params.push(type);
   }
   if (subject_id) {
-    where.push(`(j.subject_id = $${params.length + 1} OR j.reclassify_from_subject_id = $${params.length + 1})`);
+    // 1:N: subject_id 篩選也要查 reclassify_targets
+    where.push(`(
+      j.subject_id = $${params.length + 1}
+      OR j.reclassify_from_subject_id = $${params.length + 1}
+      OR EXISTS (SELECT 1 FROM journal_reclassify_targets jrt
+                  WHERE jrt.journal_id = j.id AND jrt.target_subject_id = $${params.length + 1})
+    )`);
     params.push(Number(subject_id));
   }
   if (counterparty_id) {
@@ -235,6 +402,11 @@ router.get('/B/:bookCode/journals', loadBook, asyncHandler(async (req, res) => {
       LIMIT ${lim}`,
     params
   );
+  const journalIds = result.rows.map((r) => r.id);
+  const targetsMap = await fetchTargetsForJournals(journalIds);
+  for (const r of result.rows) {
+    r.targets = targetsMap.get(r.id) || [];
+  }
   res.json({ journals: result.rows, count: result.rows.length });
 }));
 
@@ -252,14 +424,192 @@ router.get('/B/:bookCode/journals/:id', loadBook, asyncHandler(async (req, res) 
   if (result.rows.length === 0) {
     return res.status(404).json({ error: 'journal not found' });
   }
-  res.json({ journal: result.rows[0] });
+  const journal = result.rows[0];
+  const targetsMap = await fetchTargetsForJournals([journal.id]);
+  journal.targets = targetsMap.get(journal.id) || [];
+  res.json({ journal });
 }));
+
+// ── PATCH /B/:bookCode/journals/:id ───────────────────────────────────
+// M1 階段 1d (2026-05-13): 修改現有 journal,自動重算帳戶餘額.
+// 可改: date, amount, subject_id (非 reclassify), reclassify_from_subject_id (reclassify),
+//       transfer_out_account_id / transfer_in_account_id (per type),
+//       counterparty_id, summary, note, targets (reclassify 1:N).
+// 不可改: type (用 reverse + 新增 替代), book_id.
+// 不可改的 row: 已被 reverse 的 / 本身是 reverse 的.
+router.patch(
+  '/B/:bookCode/journals/:id',
+  loadBook,
+  requireBookRole('owner', 'admin', 'editor'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+    const b = req.body || {};
+
+    if (b.type !== undefined) {
+      return res.status(400).json({ error: 'cannot change type — use reverse + create new instead' });
+    }
+
+    const result = await withTransaction(async (client) => {
+      const origRes = await client.query(
+        `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
+        [id, req.book.id]
+      );
+      if (origRes.rows.length === 0) {
+        throw Object.assign(new Error('journal not found'), { status: 404 });
+      }
+      const o = origRes.rows[0];
+      if (o.reversed_by_id) {
+        throw Object.assign(new Error(`journal #${o.id} already reversed by #${o.reversed_by_id}, cannot edit`), { status: 409 });
+      }
+      if (o.reverses_id) {
+        throw Object.assign(new Error(`journal #${o.id} is itself a reverse, cannot edit`), { status: 400 });
+      }
+
+      // 1. 算「新版」欄位
+      const type = o.type;
+      const newDate = b.date !== undefined ? b.date : o.date;
+      const newCounterpartyId = b.counterparty_id !== undefined ? (b.counterparty_id || null) : o.counterparty_id;
+      const newSummary = b.summary !== undefined ? b.summary : o.summary;
+      const newNote = b.note !== undefined ? b.note : o.note;
+
+      // Validate date
+      if (newDate) {
+        const d = newDate instanceof Date ? newDate.toISOString().slice(0, 10) : String(newDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          throw Object.assign(new Error('invalid date format'), { status: 400 });
+        }
+      }
+
+      let newSubjectId = o.subject_id;
+      let newAmount = Number(o.amount);
+      let newReclassifyFromSubjectId = o.reclassify_from_subject_id;
+      let newOutAcc = o.transfer_out_account_id;
+      let newInAcc = o.transfer_in_account_id;
+      let newTargets = null;  // null = don't rewrite child; [] = rewrite empty; [...] = rewrite with rows
+
+      if (type === 'reclassify') {
+        // Allow body.targets to fully redefine targets
+        if (b.targets !== undefined || b.subject_id !== undefined || b.amount !== undefined) {
+          // Re-normalize using whatever the caller supplied, merging with current
+          const merged = {
+            targets: b.targets,
+            subject_id: b.subject_id !== undefined ? b.subject_id : o.subject_id,
+            amount: b.amount !== undefined ? b.amount : undefined,
+          };
+          const r = normalizeReclassifyTargets(merged, req.book.id);
+          newSubjectId = r.primarySubjectId;
+          newAmount = r.totalAmount;
+          newTargets = r.normalizedTargets;  // [] for N=1, [...] for N>=2
+        }
+        if (b.reclassify_from_subject_id !== undefined) {
+          newReclassifyFromSubjectId = b.reclassify_from_subject_id || null;
+        }
+        if (!newReclassifyFromSubjectId) {
+          throw Object.assign(new Error('reclassify_from_subject_id required for reclassify'), { status: 400 });
+        }
+        // from != any target
+        const allTargets = newTargets && newTargets.length > 0
+          ? newTargets.map((t) => t.target_subject_id)
+          : [newSubjectId];
+        if (allTargets.includes(Number(newReclassifyFromSubjectId))) {
+          throw Object.assign(new Error('reclassify_from_subject_id must differ from every target'), { status: 400 });
+        }
+      } else {
+        if (b.subject_id !== undefined) newSubjectId = Number(b.subject_id);
+        if (b.amount !== undefined) {
+          const a = Number(b.amount);
+          if (!(a > 0)) throw Object.assign(new Error('amount must be > 0'), { status: 400 });
+          newAmount = a;
+        }
+        if (type === 'expense' || type === 'transfer') {
+          if (b.transfer_out_account_id !== undefined) newOutAcc = b.transfer_out_account_id || null;
+          if (!newOutAcc) throw Object.assign(new Error('transfer_out_account_id required'), { status: 400 });
+        }
+        if (type === 'income' || type === 'transfer') {
+          if (b.transfer_in_account_id !== undefined) newInAcc = b.transfer_in_account_id || null;
+          if (!newInAcc) throw Object.assign(new Error('transfer_in_account_id required'), { status: 400 });
+        }
+        if (type === 'transfer' && newOutAcc && newInAcc && newOutAcc === newInAcc) {
+          throw Object.assign(new Error('transfer accounts must differ'), { status: 400 });
+        }
+      }
+
+      // 2. Validate FKs
+      const subjectIds = [Number(newSubjectId)];
+      if (newReclassifyFromSubjectId) subjectIds.push(Number(newReclassifyFromSubjectId));
+      if (newTargets) for (const t of newTargets) subjectIds.push(t.target_subject_id);
+      const accountIds = [newOutAcc, newInAcc].filter(Boolean).map(Number);
+      await validateFKs(client, req.book.id, {
+        subjectIds: [...new Set(subjectIds)],
+        accountIds,
+        counterpartyId: newCounterpartyId,
+      });
+
+      // 3. Revert old account balance (use original amount + accounts + type)
+      await applyBalanceDelta(
+        client, req.book.id, o.type,
+        o.transfer_out_account_id, o.transfer_in_account_id,
+        Number(o.amount), 'revert'
+      );
+
+      // 4. Update journal_logs row
+      await client.query(
+        `UPDATE journal_logs SET
+           date = $1, amount = $2,
+           subject_id = $3, reclassify_from_subject_id = $4,
+           transfer_out_account_id = $5, transfer_in_account_id = $6,
+           counterparty_id = $7, summary = $8, note = $9,
+           edited_at = NOW(), edited_by_id = $10, edit_count = edit_count + 1,
+           updated_at = NOW(), updated_by = $10
+         WHERE id = $11 AND book_id = $12`,
+        [
+          newDate, newAmount,
+          newSubjectId, newReclassifyFromSubjectId,
+          newOutAcc, newInAcc,
+          newCounterpartyId, newSummary, newNote,
+          req.user.id, id, req.book.id,
+        ]
+      );
+
+      // 5. Rewrite child targets if reclassify and changed
+      if (type === 'reclassify' && newTargets !== null) {
+        await client.query(`DELETE FROM journal_reclassify_targets WHERE journal_id = $1`, [id]);
+        if (newTargets.length > 0) {
+          await insertChildTargets(client, id, newTargets);
+        }
+      }
+
+      // 6. Apply new account balance
+      await applyBalanceDelta(
+        client, req.book.id, type,
+        newOutAcc, newInAcc,
+        newAmount, 'apply'
+      );
+
+      const finalRes = await client.query(`SELECT * FROM journal_logs WHERE id = $1`, [id]);
+      const journal = finalRes.rows[0];
+      journal.targets = await fetchTargetsForJournal(client, id);
+      return journal;
+    });
+
+    res.json({ journal: result });
+  })
+);
 
 // ── DELETE /B/:bookCode/journals/:id ───────────────────────────────────
 // Soft delete via reverse: not a hard DELETE on the row. Instead create a
 // new journal_log with opposite direction (type swapped, accounts swapped,
 // reclassify subjects swapped) and link via reverses_id / reversed_by_id.
 // Account balances are auto-rolled-back. Original row stays for audit.
+//
+// 1:N reclassify reverse: child targets 翻過去成 reverse journal 的 1:1 form,
+// 但因為 reverse 是「1 origin → N targets」翻成「N origins → 1 target」,
+// 結構不對稱. 簡化處理: reverse journal 走 1:1 (用 primary),
+// 並把所有 child targets 合計成 1 個 reverse amount 用 primary 即可.
+//   → 原 reclassify 多 target 的 reverse,雖然是 1:1 形式但金額 = 原 total,
+//      reclassify_from = 原 primary target,subject_id = 原 from.
+//      語意上「全部沖回到原 from 科目」.
 router.delete(
   '/B/:bookCode/journals/:id',
   loadBook,
@@ -290,7 +640,6 @@ router.delete(
         );
       }
 
-      // 計算反向 fields
       let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
       if (o.type === 'expense') {
         reverseType = 'income';
@@ -311,11 +660,12 @@ router.delete(
         fromSubject = null;
         newSubjectId = o.subject_id;
       } else if (o.type === 'reclassify') {
+        // 1:N reverse 簡化: 全部沖回 origin. Reverse journal 是 1:1 form.
         reverseType = 'reclassify';
         outAcc = null;
         inAcc = null;
-        fromSubject = o.subject_id;          // 原 target 變新 from
-        newSubjectId = o.reclassify_from_subject_id;  // 原 from 變新 target
+        fromSubject = o.subject_id;            // origin = 原 primary target
+        newSubjectId = o.reclassify_from_subject_id;  // target = 原 from
       }
 
       const ins = await client.query(
@@ -337,24 +687,11 @@ router.delete(
       );
       const reverse = ins.rows[0];
 
-      // 反向 balance update
-      const amt = Number(o.amount);
-      if (reverseType === 'expense' || reverseType === 'transfer') {
-        await client.query(
-          `UPDATE ag_accounts SET current_balance = current_balance - $1, updated_at = NOW()
-            WHERE id = $2 AND book_id = $3`,
-          [amt, outAcc, req.book.id]
-        );
-      }
-      if (reverseType === 'income' || reverseType === 'transfer') {
-        await client.query(
-          `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
-            WHERE id = $2 AND book_id = $3`,
-          [amt, inAcc, req.book.id]
-        );
-      }
+      await applyBalanceDelta(
+        client, req.book.id, reverseType,
+        outAcc, inAcc, Number(o.amount), 'apply'
+      );
 
-      // 標原 journal reversed
       await client.query(
         `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
         [reverse.id, o.id]

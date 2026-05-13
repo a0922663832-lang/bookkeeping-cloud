@@ -186,88 +186,17 @@ router.get('/B/:bookCode/members', loadBook, asyncHandler(async (req, res) => {
   res.json({ members: result.rows });
 }));
 
-// ── POST /B/:bookCode/members ────────────────────────────────────────
-router.post(
-  '/B/:bookCode/members',
-  loadBook,
-  requireBookRole('owner', 'admin'),
-  asyncHandler(async (req, res) => {
-    const { email, role } = req.body || {};
-    if (!email) return res.status(400).json({ error: 'email required' });
-    if (!['admin', 'editor', 'viewer'].includes(role)) {
-      return res.status(400).json({
-        error: 'role must be admin / editor / viewer (owner only set on book creation)',
-      });
-    }
+// ─── 成員管理 endpoints 410 Gone (2026-05-13, HR SSO plan) ────────────
+// 成員加 / 改 / 踢全部由 LEO HR /attendance 的「記帳雲權限」dropdown 控制，
+// login 時自動同步到 book_members。這裡保留路由但回 410 警示。
 
-    const userRes = await query('SELECT id FROM users WHERE email = $1', [email]);
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ error: 'user not found (they must register first)' });
-    }
-    const userId = userRes.rows[0].id;
+const MEMBERS_GONE_MSG = {
+  error: '成員管理已搬到 LEO HR 系統 /attendance 頁 — 用「記帳雲權限」dropdown 設定',
+  moved_to: `${process.env.HR_BASE_URL || 'http://10.0.1.168:3000'}/attendance`,
+};
 
-    const existing = await query(
-      'SELECT id FROM book_members WHERE book_id = $1 AND user_id = $2',
-      [req.book.id, userId]
-    );
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'user is already a member of this book' });
-    }
-
-    await query(
-      `INSERT INTO book_members (book_id, user_id, role) VALUES ($1, $2, $3)`,
-      [req.book.id, userId, role]
-    );
-    res.status(201).json({ ok: true });
-  })
-);
-
-// ── PATCH /B/:bookCode/members/:userId ───────────────────────────────
-router.patch(
-  '/B/:bookCode/members/:userId',
-  loadBook,
-  requireBookRole('owner'),
-  asyncHandler(async (req, res) => {
-    const { role } = req.body || {};
-    if (!['admin', 'editor', 'viewer'].includes(role)) {
-      return res.status(400).json({ error: 'role must be admin / editor / viewer' });
-    }
-    const targetUserId = parseInt(req.params.userId, 10);
-    if (targetUserId === req.book.owner_id) {
-      return res.status(400).json({ error: 'cannot change owner role this way' });
-    }
-    const result = await query(
-      `UPDATE book_members SET role = $1
-        WHERE book_id = $2 AND user_id = $3
-        RETURNING id`,
-      [role, req.book.id, targetUserId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'member not found' });
-    }
-    res.json({ ok: true });
-  })
-);
-
-// ── DELETE /B/:bookCode/members/:userId ──────────────────────────────
-router.delete(
-  '/B/:bookCode/members/:userId',
-  loadBook,
-  requireBookRole('owner'),
-  asyncHandler(async (req, res) => {
-    const targetUserId = parseInt(req.params.userId, 10);
-    if (targetUserId === req.book.owner_id) {
-      return res.status(400).json({ error: 'cannot remove owner' });
-    }
-    const result = await query(
-      `DELETE FROM book_members WHERE book_id = $1 AND user_id = $2 RETURNING id`,
-      [req.book.id, targetUserId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'member not found' });
-    }
-    res.json({ ok: true });
-  })
-);
+router.post('/B/:bookCode/members', (_req, res) => res.status(410).json(MEMBERS_GONE_MSG));
+router.patch('/B/:bookCode/members/:userId', (_req, res) => res.status(410).json(MEMBERS_GONE_MSG));
+router.delete('/B/:bookCode/members/:userId', (_req, res) => res.status(410).json(MEMBERS_GONE_MSG));
 
 module.exports = router;
