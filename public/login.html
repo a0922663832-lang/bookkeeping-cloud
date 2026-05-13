@@ -26,14 +26,17 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
     <div id="err" class="alert alert-danger d-none small" role="alert"></div>
     <form id="loginForm">
       <div class="mb-3">
-        <label class="form-label">員工編號</label>
-        <input type="text" class="form-control" id="empId" required placeholder="例 E001 / ADMIN" autocomplete="username">
+        <label class="form-label">員工</label>
+        <select class="form-select" id="empId" required>
+          <option value="">載入中…</option>
+        </select>
+        <div class="form-text" id="empHint" style="font-size:11px">找不到自己？請聯絡 super_admin 在 HR /attendance 頁開通記帳雲權限</div>
       </div>
       <div class="mb-4">
         <label class="form-label">PIN 密碼</label>
         <input type="password" class="form-control" id="pin" required placeholder="4 碼以上" autocomplete="current-password" inputmode="numeric">
       </div>
-      <button type="submit" class="btn btn-primary w-100" id="submitBtn">登入</button>
+      <button type="submit" class="btn btn-primary w-100" id="submitBtn" disabled>登入</button>
       <div class="text-center mt-3" style="font-size:11px;color:#888">
         帳號 / PIN 由 LEO HR 系統統一管理<br>
         改 PIN / 改權限請聯絡 super_admin
@@ -44,10 +47,61 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
 <script>
 if (localStorage.getItem('token')) location.href = '/dashboard';
 
+// 載入員工下拉 (從記帳雲 proxy HR /api/auth/employees-roster, 已 filter cloud_access != none)
+const ROLE_LABEL = { owner:'帳本擁有者', admin:'管理員', editor:'記帳員', viewer:'唯讀' };
+async function loadEmployees() {
+  const sel = document.getElementById('empId');
+  const submitBtn = document.getElementById('submitBtn');
+  const hint = document.getElementById('empHint');
+  try {
+    const r = await fetch('/auth/employees-roster');
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    const emps = data.employees || [];
+    if (emps.length === 0) {
+      sel.innerHTML = '<option value="">（無可登入員工）</option>';
+      hint.textContent = '目前沒有員工被開通記帳雲權限，請聯絡 super_admin';
+      hint.style.color = '#c4453a';
+      return;
+    }
+    // 依部門分組
+    const byDept = {};
+    for (const e of emps) {
+      const d = e.dept || '其他';
+      if (!byDept[d]) byDept[d] = [];
+      byDept[d].push(e);
+    }
+    // 按部門排序，加 saved emp_id (last used) 預選
+    const lastEmpId = localStorage.getItem('lastEmpId') || '';
+    let html = '<option value="">— 請選擇員工 —</option>';
+    for (const dept of Object.keys(byDept).sort()) {
+      html += `<optgroup label="${dept}">`;
+      for (const e of byDept[dept]) {
+        const sel = e.emp_id === lastEmpId ? ' selected' : '';
+        const tag = ROLE_LABEL[e.cloud_access] || e.cloud_access;
+        html += `<option value="${e.emp_id}" data-name="${e.name.replace(/"/g, '&quot;')}"${sel}>${e.name}　【${tag}】　${e.emp_id}</option>`;
+      }
+      html += '</optgroup>';
+    }
+    sel.innerHTML = html;
+    submitBtn.disabled = false;
+    if (lastEmpId) document.getElementById('pin').focus();
+  } catch (err) {
+    sel.innerHTML = `<option value="">（載入失敗）</option>`;
+    hint.textContent = '無法連到 LEO HR 系統取得員工名單：' + err.message;
+    hint.style.color = '#c4453a';
+  }
+}
+loadEmployees();
+
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const emp_id = document.getElementById('empId').value.trim();
+  const emp_id = document.getElementById('empId').value;
   const pin = document.getElementById('pin').value;
+  if (!emp_id) { return; }
   const errBox = document.getElementById('err');
   const btn = document.getElementById('submitBtn');
   errBox.classList.add('d-none');
@@ -66,6 +120,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     }
     localStorage.setItem('token', data.token);
     localStorage.setItem('user', JSON.stringify(data.user));
+    localStorage.setItem('lastEmpId', emp_id);  // 下次自動選回
     location.href = '/dashboard';
   } catch (err) {
     errBox.textContent = '連線錯誤: ' + err.message;

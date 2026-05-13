@@ -169,6 +169,40 @@ router.post('/login', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * GET /auth/employees-roster
+ * 給登入頁 dropdown 用。Proxy HR /api/auth/employees-roster + filter cloud_access != 'none'.
+ * 公開 (no auth) — 內網 LAN only.
+ */
+router.get('/employees-roster', asyncHandler(async (req, res) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const r = await fetch(`${HR_BASE_URL}/api/auth/employees-roster`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) {
+      return res.status(r.status).json({ error: `HR roster HTTP ${r.status}` });
+    }
+    const rows = await r.json();
+    // 只回有 cloud_access != 'none' (含 viewer/editor/admin/owner) 的員工
+    const filtered = rows.filter((e) =>
+      e.cloud_access && e.cloud_access !== 'none' && VALID_CLOUD_ACCESS.has(e.cloud_access)
+    ).map((e) => ({
+      emp_id: e.emp_id,
+      name: e.name,
+      dept: e.dept || null,
+      cloud_access: e.cloud_access,
+    }));
+    res.json({ employees: filtered });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') {
+      return res.status(504).json({ error: 'HR upstream timeout' });
+    }
+    res.status(502).json({ error: 'HR upstream unreachable: ' + e.message });
+  }
+}));
+
+/**
  * GET /auth/me
  * 回當前登入 user (含 HR shadow fields)
  */
