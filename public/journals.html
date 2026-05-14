@@ -49,6 +49,18 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 .empty-state{padding:60px 20px;text-align:center;color:#888}
 .detail-meta{font-size:12px;color:#666;line-height:1.8}
 .detail-meta strong{color:#1a1814;margin-right:8px}
+.reorder-btn{background:transparent;border:0;color:#888;padding:0 4px;font-size:14px;line-height:1;cursor:pointer;vertical-align:middle}
+.reorder-btn:hover{color:#6a3a8a}
+.reorder-list{list-style:none;padding:0;margin:0;max-height:50vh;overflow-y:auto}
+.reorder-item{display:flex;align-items:center;padding:12px 12px;background:#fafafa;border:1px solid #e8e2d5;border-radius:8px;margin-bottom:8px;user-select:none;-webkit-user-select:none;touch-action:none}
+.reorder-item.dragging{opacity:.6;background:#f0e8fa}
+.reorder-handle{font-size:20px;color:#aaa;cursor:grab;padding:0 12px 0 4px;line-height:1;touch-action:none}
+.reorder-handle:active{cursor:grabbing;color:#6a3a8a}
+.reorder-item .acc-name{flex:1;font-weight:500}
+.reorder-item .acc-type{font-size:11px;color:#888;background:#fff;padding:2px 8px;border-radius:6px;border:1px solid #e8e2d5}
+.reorder-hint{font-size:12px;color:#888;margin-bottom:10px}
+.reorder-group-title{font-size:12px;font-weight:600;color:#6a3a8a;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #eadff5}
+.reorder-group-title:first-child{margin-top:0}
 </style>
 </head>
 <body>
@@ -155,7 +167,10 @@ table.journals-table tr.is-reverse{background:#fff5f5}
         <!-- expense / income / transfer 共用區 -->
         <div id="jmStandardBody" class="row g-3 mt-1">
           <div class="col-md-6" id="jmSubjectWrap">
-            <label class="form-label small">會計科目 *</label>
+            <label class="form-label small d-flex align-items-center justify-content-between">
+              <span>會計科目 *</span>
+              <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderSubjectsFromJm()">≡</button>
+            </label>
             <select class="form-select" id="jmSubject"></select>
           </div>
           <div class="col-md-6">
@@ -163,11 +178,17 @@ table.journals-table tr.is-reverse{background:#fff5f5}
             <input type="number" min="0.01" step="0.01" class="form-control" id="jmAmount">
           </div>
           <div class="col-md-6" id="jmOutWrap">
-            <label class="form-label small" id="jmOutLbl">付款帳戶 *</label>
+            <label class="form-label small d-flex align-items-center justify-content-between">
+              <span id="jmOutLbl">付款帳戶 *</span>
+              <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderAccounts()">≡</button>
+            </label>
             <select class="form-select" id="jmOut"></select>
           </div>
           <div class="col-md-6 d-none" id="jmInWrap">
-            <label class="form-label small" id="jmInLbl">收款帳戶 *</label>
+            <label class="form-label small d-flex align-items-center justify-content-between">
+              <span id="jmInLbl">收款帳戶 *</span>
+              <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderAccounts()">≡</button>
+            </label>
             <select class="form-select" id="jmIn"></select>
           </div>
         </div>
@@ -176,7 +197,10 @@ table.journals-table tr.is-reverse{background:#fff5f5}
         <div id="jmReclassifyBody" class="d-none mt-1">
           <div class="row g-3">
             <div class="col-md-6">
-              <label class="form-label small">原科目（要分出去的）*</label>
+              <label class="form-label small d-flex align-items-center justify-content-between">
+                <span>原科目（要分出去的）*</span>
+                <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderSubjects(null)">≡</button>
+              </label>
               <select class="form-select" id="jmRcFrom"></select>
             </div>
             <div class="col-md-6">
@@ -196,7 +220,10 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 
         <div class="row g-3 mt-1">
           <div class="col-md-6">
-            <label class="form-label small">對象 (counterparty)</label>
+            <label class="form-label small d-flex align-items-center justify-content-between">
+              <span>對象 (counterparty)</span>
+              <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderCounterparties()">≡</button>
+            </label>
             <select class="form-select" id="jmCounterparty"><option value="">— 不指定 —</option></select>
           </div>
           <div class="col-md-6">
@@ -238,6 +265,28 @@ table.journals-table tr.is-reverse{background:#fff5f5}
   </div>
 </div>
 
+<!-- ────── 帳戶排序 Modal ────── -->
+<div class="modal fade" id="reorderModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">帳戶排序</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="reorder-hint">長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。</div>
+        <div id="reorderList"></div>
+        <div id="reorderError" class="alert alert-danger small d-none mt-2"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" id="reorderSaveBtn" onclick="saveAccountOrder()">儲存排序</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const BOOK = 'NEST0001';
@@ -627,6 +676,237 @@ async function openDetail(id) {
     detailModal.show();
   } catch (e) {
     alert('載入失敗: ' + e.message);
+  }
+}
+
+// ── 排序（長按 ≡ 拖曳）— 支援 accounts / subjects ─────────────
+const reorderModal = new bootstrap.Modal($('reorderModal'));
+let reorderSortables = [];   // 可能有多個 Sortable（科目時每 parent_type 一個）
+let reorderKind = 'accounts'; // 'accounts' | 'subjects'
+
+const PARENT_TYPE_LABELS = {
+  t1: 't1 — 銷貨收入', t2: 't2 — 銷貨成本', t3: 't3 — 營業費用',
+  t4: 't4 — 資金 / 資產 / 負債', t5: 't5 — 業外收入 / 其他',
+};
+
+function destroyReorderSortables() {
+  for (const s of reorderSortables) { try { s.destroy(); } catch (_) {} }
+  reorderSortables = [];
+}
+
+// 入口 1：帳戶排序
+function openReorderAccounts() {
+  reorderKind = 'accounts';
+  $('reorderError').classList.add('d-none');
+  document.querySelector('#reorderModal .modal-title').textContent = '帳戶排序';
+  $('reorderModal').querySelector('.reorder-hint').innerHTML =
+    '長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。';
+  const wrap = $('reorderList');
+  wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
+    ${cache.accounts.map((a) => `
+      <li class="reorder-item" data-id="${a.id}">
+        <span class="reorder-handle">≡</span>
+        <span class="acc-name">${esc(a.name)}</span>
+        <span class="acc-type">${esc(a.type)}</span>
+      </li>
+    `).join('')}
+  </ul>`;
+  destroyReorderSortables();
+  reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
+    handle: '.reorder-handle',
+    animation: 150,
+    delay: 150,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 5,
+    ghostClass: 'dragging',
+  }));
+  reorderModal.show();
+}
+
+// 入口 2：科目排序（限制 parent_type；null = 全部）
+function openReorderSubjects(parentTypes /* array | null */) {
+  reorderKind = 'subjects';
+  $('reorderError').classList.add('d-none');
+  document.querySelector('#reorderModal .modal-title').textContent = '科目排序';
+  $('reorderModal').querySelector('.reorder-hint').innerHTML =
+    '長按左邊 <strong>≡</strong> 然後拖曳。同一類別內可拖（不同類別之間不能跨）。';
+
+  // group by parent_type，保持 cache.subjects 現有順序（已是 display_order）
+  const groups = {};
+  for (const s of cache.subjects) {
+    if (parentTypes && !parentTypes.includes(s.parent_type)) continue;
+    (groups[s.parent_type] ||= []).push(s);
+  }
+  // 用固定順序 t1→t5
+  const orderedKeys = ['t1','t2','t3','t4','t5'].filter((k) => groups[k]);
+
+  const wrap = $('reorderList');
+  wrap.innerHTML = orderedKeys.map((pt) => `
+    <div class="reorder-group-title">${esc(PARENT_TYPE_LABELS[pt] || pt)}</div>
+    <ul class="reorder-list reorder-sublist" data-parent-type="${pt}" style="margin:0;padding:0">
+      ${groups[pt].map((s) => `
+        <li class="reorder-item" data-id="${s.id}">
+          <span class="reorder-handle">≡</span>
+          <span class="acc-name">${esc(s.code || '')} ${esc(s.name)}</span>
+          <span class="acc-type">${esc(pt)}</span>
+        </li>
+      `).join('')}
+    </ul>
+  `).join('');
+
+  destroyReorderSortables();
+  for (const ul of wrap.querySelectorAll('.reorder-sublist')) {
+    reorderSortables.push(Sortable.create(ul, {
+      handle: '.reorder-handle',
+      animation: 150,
+      delay: 150,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 5,
+      ghostClass: 'dragging',
+      group: { name: 'sub-' + ul.dataset.parentType, pull: false, put: false }, // 鎖住跨組
+    }));
+  }
+  reorderModal.show();
+}
+
+// 入口 3：對象排序（flat list）
+function openReorderCounterparties() {
+  reorderKind = 'counterparties';
+  $('reorderError').classList.add('d-none');
+  document.querySelector('#reorderModal .modal-title').textContent = '對象排序';
+  $('reorderModal').querySelector('.reorder-hint').innerHTML =
+    '長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。';
+  const wrap = $('reorderList');
+  wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
+    ${cache.counterparties.map((c) => `
+      <li class="reorder-item" data-id="${c.id}">
+        <span class="reorder-handle">≡</span>
+        <span class="acc-name">${esc(c.name)}</span>
+        <span class="acc-type">${esc(c.type || c.category || '')}</span>
+      </li>
+    `).join('')}
+  </ul>`;
+  destroyReorderSortables();
+  reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
+    handle: '.reorder-handle',
+    animation: 150,
+    delay: 150,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 5,
+    ghostClass: 'dragging',
+  }));
+  reorderModal.show();
+}
+
+// 入口 2a：從「記一筆 modal」按 ≡ 進來，自動帶當前 type 的 parent_types filter
+function openReorderSubjectsFromJm() {
+  const t = $('jmType').value;
+  const filter = t === 'expense' ? ['t2','t3']
+               : t === 'income'  ? ['t1','t5']
+               : t === 'transfer' ? ['t4']
+               : null;  // reclassify / 未知 → 全部
+  openReorderSubjects(filter);
+}
+
+async function saveAccountOrder() {
+  const btn = $('reorderSaveBtn');
+  $('reorderError').classList.add('d-none');
+  btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    let updates = [];
+
+    if (reorderKind === 'accounts') {
+      const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
+      items.forEach((li, idx) => {
+        const id = Number(li.dataset.id);
+        const newOrder = (idx + 1) * 10;
+        const old = cache.accounts.find((a) => a.id === id);
+        if (!old || old.display_order !== newOrder) {
+          updates.push(api(`/B/${BOOK}/accounts/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
+        }
+      });
+    } else if (reorderKind === 'subjects') {
+      // 每個 sublist 各自 10/20/30...（跨 parent_type 不影響，因後端 ORDER BY parent_type, display_order）
+      for (const ul of $('reorderList').querySelectorAll('.reorder-sublist')) {
+        const items = [...ul.querySelectorAll('.reorder-item')];
+        items.forEach((li, idx) => {
+          const id = Number(li.dataset.id);
+          const newOrder = (idx + 1) * 10;
+          const old = cache.subjects.find((s) => s.id === id);
+          if (!old || old.display_order !== newOrder) {
+            updates.push(api(`/B/${BOOK}/subjects/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
+          }
+        });
+      }
+    } else if (reorderKind === 'counterparties') {
+      const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
+      items.forEach((li, idx) => {
+        const id = Number(li.dataset.id);
+        const newOrder = (idx + 1) * 10;
+        const old = cache.counterparties.find((c) => c.id === id);
+        if (!old || old.display_order !== newOrder) {
+          updates.push(api(`/B/${BOOK}/counterparties/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
+        }
+      });
+    }
+
+    if (updates.length === 0) {
+      reorderModal.hide();
+      return;
+    }
+    await Promise.all(updates);
+
+    // 重撈對應 cache + 重 fill 所有相關 select
+    if (reorderKind === 'accounts') {
+      const acc = await api(`/B/${BOOK}/accounts`);
+      cache.accounts = acc.accounts || [];
+      fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
+      const t = $('jmType').value;
+      if (t && t !== 'reclassify') {
+        const prevOut = $('jmOut').value, prevIn = $('jmIn').value;
+        $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+        $('jmIn').innerHTML  = '<option value="">— 選帳戶 —</option>' + accountOptions();
+        if (prevOut) $('jmOut').value = prevOut;
+        if (prevIn)  $('jmIn').value  = prevIn;
+      }
+    } else if (reorderKind === 'subjects') {
+      const subj = await api(`/B/${BOOK}/subjects`);
+      cache.subjects = subj.subjects || [];
+      fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
+      const t = $('jmType').value;
+      const filter = t === 'expense' ? ['t2','t3']
+                   : t === 'income'  ? ['t1','t5']
+                   : t === 'transfer' ? ['t4']
+                   : null;
+      if (t === 'reclassify') {
+        const prev = $('jmRcFrom').value;
+        $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
+        if (prev) $('jmRcFrom').value = prev;
+        // target rows 也 refresh
+        for (const sel of document.querySelectorAll('#jmTargets .jm-tg-subject')) {
+          const prevVal = sel.value;
+          sel.innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(null);
+          if (prevVal) sel.value = prevVal;
+        }
+      } else if (t) {
+        const prev = $('jmSubject').value;
+        $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
+        if (prev) $('jmSubject').value = prev;
+      }
+    } else if (reorderKind === 'counterparties') {
+      const cp = await api(`/B/${BOOK}/counterparties`);
+      cache.counterparties = cp.counterparties || [];
+      fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
+      const prev = $('jmCounterparty').value;
+      fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
+      if (prev) $('jmCounterparty').value = prev;
+    }
+    reorderModal.hide();
+  } catch (e) {
+    $('reorderError').textContent = '儲存失敗：' + e.message;
+    $('reorderError').classList.remove('d-none');
+  } finally {
+    btn.disabled = false; btn.textContent = '儲存排序';
   }
 }
 
