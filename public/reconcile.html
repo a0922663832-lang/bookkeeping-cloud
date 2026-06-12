@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>記帳雲 · 對帳中心</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+.navbar{background:#fff!important}
+.brand-icon{width:34px;height:34px;background:linear-gradient(135deg,#6a3a8a,#4a2a6a);border-radius:10px;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:17px;margin-right:10px}
+.navbar-brand{font-weight:700;color:#6a3a8a!important}
+.nav-link.active{color:#6a3a8a!important;font-weight:600}
+.card-list{background:#fff;border-radius:14px;padding:8px 22px;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.stat-card{background:#fff;border-radius:14px;padding:18px 22px;box-shadow:0 2px 12px rgba(0,0,0,.05);text-align:center}
+.stat-num{font-size:30px;font-weight:700}
+.stat-ok .stat-num{color:#1a6a5a}
+.stat-transit .stat-num{color:#b8860b}
+.stat-diff .stat-num{color:#bf4a18}
+.ev-row{padding:14px 0;border-bottom:1px solid #f0ece4}
+.ev-row:last-child{border-bottom:0}
+.src-badge{padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600}
+.src-pos{background:#eaf0fa;color:#1a4a8a}
+.src-expense{background:#fdf0ea;color:#bf4a18}
+.btn-primary{background:#6a3a8a;border-color:#6a3a8a}
+.btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
+.detail-text{color:#888;font-size:13px}
+</style>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg shadow-sm">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
+    <div class="navbar-nav me-auto">
+      <a class="nav-link" href="/dashboard">儀表板</a>
+      <a class="nav-link" href="/pending">待審</a>
+      <a class="nav-link" href="/journals?new=1">記一筆</a>
+      <a class="nav-link" href="/journals">明細</a>
+      <a class="nav-link" href="/reports">報表</a>
+      <a class="nav-link active" href="/reconcile">對帳</a>
+      <a class="nav-link" href="/setup">主檔</a>
+      <a class="nav-link" href="/settings">設定</a>
+    </div>
+    <div class="navbar-nav">
+      <span class="navbar-text me-3" id="userName"></span>
+      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h4 class="mb-0">對帳中心</h4>
+    <div class="d-flex gap-2">
+      <input type="date" id="datePick" class="form-control form-control-sm" style="width:160px">
+      <button class="btn btn-sm btn-outline-secondary" id="loadBtn">查看</button>
+      <button class="btn btn-sm btn-primary" id="runBtn">立刻重新對帳</button>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-4"><div class="stat-card stat-ok"><div class="stat-num" id="nOk">–</div><div>對平</div></div></div>
+    <div class="col-4"><div class="stat-card stat-transit"><div class="stat-num" id="nTransit">–</div><div>還在路上</div></div></div>
+    <div class="col-4"><div class="stat-card stat-diff"><div class="stat-num" id="nDiff">–</div><div>有問題</div></div></div>
+  </div>
+
+  <div class="card-list mb-3">
+    <h6 class="pt-3 mb-1" style="color:#bf4a18">有問題（需要處理）</h6>
+    <div id="diffList" class="text-muted py-3">尚未載入</div>
+  </div>
+
+  <div class="card-list mb-3">
+    <h6 class="pt-3 mb-1" style="color:#b8860b">還在路上（排隊或等審核，先不用動）</h6>
+    <div id="transitList" class="text-muted py-3">尚未載入</div>
+  </div>
+
+  <div class="card-list mb-3">
+    <h6 class="pt-3 mb-1" style="color:#1a6a5a">對平</h6>
+    <div id="okList" class="text-muted py-3">尚未載入</div>
+  </div>
+
+  <div class="text-muted" style="font-size:12px" id="lastRun"></div>
+</div>
+
+<script>
+const token = localStorage.getItem('token');
+if (!token) location.href = '/';
+const user = JSON.parse(localStorage.getItem('user') || '{}');
+document.getElementById('userName').textContent = user.name || '';
+document.getElementById('logoutBtn').addEventListener('click', (e) => {
+  e.preventDefault(); localStorage.clear(); location.href = '/';
+});
+
+const BOOK = 'NEST0001';
+let openRepush = new Set();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, opts.headers || {});
+  const r = await fetch(path, opts);
+  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
+  return r.json();
+}
+
+function fmt(v) { return v == null ? '' : '$' + new Intl.NumberFormat('zh-TW').format(parseFloat(v)); }
+
+function srcBadge(src) {
+  if (src === 'leo_pos') return '<span class="src-badge src-pos">點餐結帳</span>';
+  if (src === 'leo_expense') return '<span class="src-badge src-expense">支出單</span>';
+  return '<span class="src-badge">' + src + '</span>';
+}
+
+function evName(t) {
+  return ({ pos_shift_settled: '收班入帳', pos_deposit_offset: '訂金抵用', 'expense.created': '支出單' })[t] || t;
+}
+
+function rowHtml(ev, withRepush) {
+  let btn = '';
+  if (withRepush) {
+    if (openRepush.has(ev.external_id)) {
+      btn = '<button class="btn btn-sm btn-outline-secondary" disabled>補送中…</button>';
+    } else if ((ev.detail || '').includes('可補推')) {
+      btn = '<button class="btn btn-sm btn-primary" onclick="repush(\'' + ev.external_source + '\',\'' + ev.external_id + '\')">重新補送</button>';
+    } else {
+      btn = '<span class="detail-text">要回原系統重新觸發</span>';
+    }
+  }
+  return '<div class="ev-row d-flex justify-content-between align-items-center flex-wrap gap-2">'
+    + '<div>' + srcBadge(ev.external_source) + ' <strong class="ms-1">' + evName(ev.event_type) + '</strong>'
+    + ' <span class="text-muted" style="font-size:12px">' + ev.external_id + '</span>'
+    + (ev.leo_amount != null ? ' <span class="ms-2">' + fmt(ev.leo_amount) + '</span>' : '')
+    + (ev.detail ? '<div class="detail-text">' + ev.detail + '</div>' : '')
+    + '</div><div>' + btn + '</div></div>';
+}
+
+function render(data) {
+  openRepush = new Set((data.open_repush || []).map(r => r.external_id));
+  document.getElementById('nOk').textContent = data.counts.settled;
+  document.getElementById('nTransit').textContent = data.counts.in_transit;
+  document.getElementById('nDiff').textContent = data.counts.diff;
+
+  const g = data.results;
+  document.getElementById('diffList').innerHTML =
+    g.diff.length ? g.diff.map(e => rowHtml(e, true)).join('') : '<div class="py-3 text-muted">沒有問題 🎉</div>';
+  document.getElementById('transitList').innerHTML =
+    g.in_transit.length ? g.in_transit.map(e => rowHtml(e, false)).join('') : '<div class="py-3 text-muted">無</div>';
+  document.getElementById('okList').innerHTML =
+    g.settled.length ? g.settled.map(e => rowHtml(e, false)).join('') : '<div class="py-3 text-muted">無（這天還沒對過帳，按「立刻重新對帳」）</div>';
+  document.getElementById('lastRun').textContent =
+    data.last_run_at ? '上次對帳時間：' + new Date(data.last_run_at).toLocaleString('zh-TW') : '這一天還沒跑過對帳';
+}
+
+async function load() {
+  const date = document.getElementById('datePick').value;
+  if (!date) return;
+  const data = await api('/B/' + BOOK + '/reconciliation?date=' + date);
+  if (data.error) { alert(data.error); return; }
+  render(data);
+}
+
+async function runNow() {
+  const date = document.getElementById('datePick').value;
+  if (!date) return;
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true; btn.textContent = '對帳中…';
+  try {
+    const r = await api('/B/' + BOOK + '/reconciliation/run', { method: 'POST', body: JSON.stringify({ date }) });
+    if (r.error) { alert(r.error); return; }
+    await load();
+  } finally {
+    btn.disabled = false; btn.textContent = '立刻重新對帳';
+  }
+}
+
+async function repush(src, extId) {
+  const r = await api('/B/' + BOOK + '/reconciliation/repush', {
+    method: 'POST', body: JSON.stringify({ external_source: src, external_id: extId }),
+  });
+  if (r.error) { alert(r.error); return; }
+  alert('已排入補送，幾分鐘內會自動重推，稍後再按「查看」確認');
+  await load();
+}
+
+document.getElementById('loadBtn').addEventListener('click', load);
+document.getElementById('runBtn').addEventListener('click', runNow);
+
+// 預設昨天
+const y = new Date(Date.now() - 86400000);
+document.getElementById('datePick').value =
+  y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
+load();
+</script>
+</body>
+</html>

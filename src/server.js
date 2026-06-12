@@ -27,11 +27,12 @@ const journalsRoutes = require('./routes/journals');
 const lookupsRoutes = require('./routes/lookups');
 const reportsRoutes = require('./routes/reports');
 const postingRoutes = require('./routes/posting');
+const reconciliationRoutes = require('./routes/reconciliation');
 
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.13.0';
+const VERSION = '0.14.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // ── Redis ──────────────────────────────────────────────────────────
@@ -272,6 +273,7 @@ app.get('/journals', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'journals.
 app.get('/setup', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'setup.html')));
 app.get('/reports', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reports.html')));
 app.get('/settings', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'settings.html')));
+app.get('/reconcile', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reconcile.html')));
 
 app.use('/auth', authRoutes);
 app.use('/', booksRoutes);
@@ -279,6 +281,7 @@ app.use('/', lookupsRoutes);
 app.use('/', journalsRoutes);
 app.use('/', reportsRoutes);
 app.use('/', postingRoutes);
+app.use('/', reconciliationRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not found', path: req.path });
@@ -311,6 +314,13 @@ async function start() {
       require('./dailyReviewCron').startCron();
     } catch (e) {
       console.error('[daily-review] cron 啟動失敗:', e.message);
+    }
+
+    // Phase 0: 每日對帳 cron（04:10 對前一日逐事件比對 LEO 端）
+    try {
+      require('./reconcileCron').startCron();
+    } catch (e) {
+      console.error('[recon] cron 啟動失敗:', e.message);
     }
   } catch (e) {
     console.error('[server] failed to start:', e);
