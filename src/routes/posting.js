@@ -386,6 +386,34 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
     return res.status(400).json(body);
   }
 
+  // Phase 3：ensure_accounts — 來源系統聲明本事件需要的帳戶，缺的自動補建
+  // （規格 §5.2.5.3.1「應付帳款-{廠商}」由雲端負責建立的 v1 落地）
+  // 白名單 type、name 長度限制；已存在（含停用）一律不動。
+  if (Array.isArray(b.ensure_accounts)) {
+    for (const acc of b.ensure_accounts.slice(0, 5)) {
+      const name = acc && typeof acc.name === 'string' ? acc.name.trim().slice(0, 50) : '';
+      const type = acc && acc.type;
+      if (!name || !['cash', 'bank', 'virtual', 'liability'].includes(type)) continue;
+      try {
+        // 先查後插（ag_accounts 無 (book_id,name) UNIQUE 約束，不能依賴 ON CONFLICT）
+        const exists = await query(
+          `SELECT id FROM ag_accounts WHERE book_id = $1 AND name = $2`,
+          [req.book.id, name]
+        );
+        if (exists.rows.length > 0) continue;
+        const created = await query(
+          `INSERT INTO ag_accounts (book_id, name, type, display_order)
+           SELECT $1, $2, $3, COALESCE(MAX(display_order), 0) + 10 FROM ag_accounts WHERE book_id = $1
+           RETURNING id`,
+          [req.book.id, name, type]
+        );
+        console.log(`[posting] ensure_accounts: 建立 ${name} (${type}) → id ${created.rows[0].id}`);
+      } catch (e) {
+        console.warn(`[posting] ensure_accounts ${name} failed: ${e.message}`);
+      }
+    }
+  }
+
   // idempotency
   const existJ = await query(
     `SELECT id FROM journal_logs WHERE book_id = $1 AND external_source = $2 AND external_id = $3`,
