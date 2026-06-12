@@ -65,7 +65,8 @@ function notify(title, message) {
       port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname,
       method: 'POST',
-      headers: { Title: encodeURIComponent(title), Priority: 'high', Tags: 'warning' },
+      // ntfy 標題須 ASCII，中文 encode（與 LEO 端 alertService 同做法）
+      headers: { Title: encodeURIComponent(title).replace(/%20/g, ' '), Priority: 'high', Tags: 'warning' },
       timeout: 8000,
     });
     req.on('error', (e) => console.warn('[recon] ntfy failed:', e.message));
