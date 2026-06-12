@@ -471,6 +471,186 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
 }));
 
 // ============================================================================
+// POST /B/:bookCode/internal/supersede — Phase 2 (紙測 F9)
+// 來源單據「修改 / 作廢」後的雲端跟進：
+//   1. base 還掛在待審 → 退回（review_note 標 superseded）
+//   2. base 已入帳且未沖銷 → 自動反向沖銷（僅支援單式傳票；composite 拒收）
+//   3. action='replace' → 新版本（new_external_id 帶 @v2）永遠進待審 —
+//      改過的單一律人工核，不走 auto（N7 同精神）
+// 冪等：replace 以 new_external_id 判重；void 重送時 base 已沖銷 → idempotent
+// ============================================================================
+router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req, res) => {
+  // auth — 同 /internal/posting
+  let hmacValid = false;
+  if (hmac.isConfigured()) {
+    const r = hmac.verifyRequest(req.headers, req.rawBody || '');
+    if (!r.valid) {
+      await logWebhookInbound(req, req.book.id, false, 401, { error: r.reason });
+      return res.status(401).json({ error: r.reason });
+    }
+    hmacValid = true;
+  } else if (SHARED_POSTING_TOKEN) {
+    if (req.headers['x-posting-token'] !== SHARED_POSTING_TOKEN) {
+      return res.status(401).json({ error: 'invalid or missing X-Posting-Token' });
+    }
+  }
+
+  const b = req.body || {};
+  const { external_source, base_external_id, action, reason, event_id,
+          new_external_id, proposed_journal, payload } = b;
+
+  if (!external_source || !base_external_id) {
+    const body = { error: 'external_source and base_external_id required' };
+    await logWebhookInbound(req, req.book.id, hmacValid, 400, body);
+    return res.status(400).json(body);
+  }
+  if (!['void', 'replace'].includes(action)) {
+    const body = { error: "action must be 'void' or 'replace'" };
+    await logWebhookInbound(req, req.book.id, hmacValid, 400, body);
+    return res.status(400).json(body);
+  }
+  if (!reason || !String(reason).trim()) {
+    const body = { error: 'reason required' };
+    await logWebhookInbound(req, req.book.id, hmacValid, 400, body);
+    return res.status(400).json(body);
+  }
+  if (action === 'replace') {
+    if (!new_external_id || new_external_id === base_external_id) {
+      const body = { error: 'replace requires new_external_id (different from base)' };
+      await logWebhookInbound(req, req.book.id, hmacValid, 400, body);
+      return res.status(400).json(body);
+    }
+    const vErr = validateProposedJournal(proposed_journal);
+    if (vErr) {
+      const body = { error: vErr };
+      await logWebhookInbound(req, req.book.id, hmacValid, 400, body);
+      return res.status(400).json(body);
+    }
+  }
+
+  const result = await withTransaction(async (client) => {
+    const out = { reversed_journal_id: null, rejected_pending_id: null, new_pending_id: null, idempotent: false };
+
+    // 冪等（replace）：新版本已收過 → 直接回
+    if (action === 'replace') {
+      const exist = await client.query(
+        `SELECT id, status FROM pending_journals
+          WHERE book_id = $1 AND external_source = $2 AND external_id = $3`,
+        [req.book.id, external_source, new_external_id]
+      );
+      if (exist.rows.length > 0) {
+        out.idempotent = true;
+        out.new_pending_id = exist.rows[0].id;
+        return out;
+      }
+    }
+
+    // 1. base 還在待審 → 退回
+    const pend = await client.query(
+      `SELECT id, status FROM pending_journals
+        WHERE book_id = $1 AND external_source = $2 AND external_id = $3
+        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+      [req.book.id, external_source, base_external_id]
+    );
+    if (pend.rows.length > 0 && pend.rows[0].status === 'pending') {
+      await client.query(
+        `UPDATE pending_journals
+            SET status = 'rejected', review_note = $1, reviewed_at = NOW(), updated_at = NOW()
+          WHERE id = $2`,
+        [`superseded: ${String(reason).slice(0, 300)}`, pend.rows[0].id]
+      );
+      out.rejected_pending_id = pend.rows[0].id;
+    }
+
+    // 2. base 已入帳且未沖銷 → 簡式反向沖銷（語意同 journals.js DELETE）
+    const jr = await client.query(
+      `SELECT * FROM journal_logs
+        WHERE book_id = $1 AND external_source = $2 AND external_id = $3 FOR UPDATE`,
+      [req.book.id, external_source, base_external_id]
+    );
+    if (jr.rows.length > 0) {
+      const o = jr.rows[0];
+      if (o.is_composite) {
+        throw Object.assign(new Error('supersede 不支援 composite journal（POS 收班不可改單）'), { status: 422 });
+      }
+      if (!o.reversed_by_id && !o.reverses_id) {
+        let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
+        if (o.type === 'expense') {
+          reverseType = 'income'; outAcc = null; inAcc = o.transfer_out_account_id;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else if (o.type === 'income') {
+          reverseType = 'expense'; outAcc = o.transfer_in_account_id; inAcc = null;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else if (o.type === 'transfer') {
+          reverseType = 'transfer'; outAcc = o.transfer_in_account_id; inAcc = o.transfer_out_account_id;
+          fromSubject = null; newSubjectId = o.subject_id;
+        } else { // reclassify
+          reverseType = 'reclassify'; outAcc = null; inAcc = null;
+          fromSubject = o.subject_id; newSubjectId = o.reclassify_from_subject_id;
+        }
+
+        const ins = await client.query(
+          `INSERT INTO journal_logs (
+             book_id, date, type, amount,
+             subject_id, reclassify_from_subject_id,
+             transfer_out_account_id, transfer_in_account_id,
+             counterparty_id, summary, note,
+             reverses_id, is_auto_posted, created_by, updated_by
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13, $13)
+           RETURNING id`,
+          [
+            req.book.id, o.date, reverseType, o.amount,
+            newSubjectId, fromSubject, outAcc, inAcc,
+            o.counterparty_id,
+            `[來源單據${action === 'void' ? '作廢' : '修改'}沖銷] ${base_external_id}`,
+            String(reason).slice(0, 500),
+            o.id, SYSTEM_BOT_USER_ID,
+          ]
+        );
+        const reverseId = ins.rows[0].id;
+
+        // 帳戶餘額回滾（語意同 insertLegacyJournal 的正向邏輯）
+        const amt = Number(o.amount);
+        if (reverseType === 'expense' || reverseType === 'transfer') {
+          await client.query(
+            `UPDATE ag_accounts SET current_balance = current_balance - $1, updated_at = NOW()
+              WHERE id = $2 AND book_id = $3`, [amt, outAcc, req.book.id]);
+        }
+        if (reverseType === 'income' || reverseType === 'transfer') {
+          await client.query(
+            `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
+              WHERE id = $2 AND book_id = $3`, [amt, inAcc, req.book.id]);
+        }
+
+        await client.query(
+          `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
+          [reverseId, o.id]
+        );
+        out.reversed_journal_id = reverseId;
+      } else {
+        out.idempotent = out.idempotent || !!o.reversed_by_id; // void 重送：已沖銷過
+      }
+    }
+
+    // 3. replace → 新版本永遠進待審
+    if (action === 'replace') {
+      const insP = await client.query(
+        `INSERT INTO pending_journals (book_id, external_source, external_id, event_id, payload, proposed_journal, status)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'pending') RETURNING id`,
+        [req.book.id, external_source, new_external_id, event_id || null,
+         JSON.stringify(payload || {}), JSON.stringify(proposed_journal)]
+      );
+      out.new_pending_id = insP.rows[0].id;
+    }
+
+    return out;
+  });
+
+  await logWebhookInbound(req, req.book.id, hmacValid, 200, result);
+  res.status(200).json({ ok: true, ...result });
+}));
+
+// ============================================================================
 // GET /B/:bookCode/pending-journals
 // ============================================================================
 router.get('/B/:bookCode/pending-journals', requireAuth, loadAuth, asyncHandler(async (req, res) => {

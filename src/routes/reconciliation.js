@@ -161,6 +161,67 @@ router.get('/internal/v1/repush-queue', asyncHandler(async (req, res) => {
   res.json({ items: picked.rows });
 }));
 
+// Phase 2 (R3 + 狀態機補完)：LEO 端輪詢詢問一批 external_id 的最終狀態
+// 回 posted（含雲端最終科目，老闆若審核後改過科目以雲端為準）/ pending / rejected（含原因）
+// / reversed（已沖銷）/ missing
+router.post('/internal/v1/status-check', asyncHandler(async (req, res) => {
+  const v = hmac.verifyRequest(req.headers, req.rawBody);
+  if (!v.valid) return res.status(401).json({ error: v.reason });
+
+  const { book, external_source, external_ids } = req.body || {};
+  if (!book || !external_source || !Array.isArray(external_ids) || external_ids.length === 0) {
+    return res.status(400).json({ error: 'book, external_source, external_ids[] required' });
+  }
+  if (external_ids.length > 100) {
+    return res.status(400).json({ error: 'max 100 external_ids per call' });
+  }
+  const bookRes = await query(
+    `SELECT id FROM books WHERE code = $1 AND is_active = TRUE`,
+    [String(book).toUpperCase()]
+  );
+  if (bookRes.rows.length === 0) return res.status(404).json({ error: 'book not found' });
+  const bookId = bookRes.rows[0].id;
+
+  const results = [];
+  for (const extId of external_ids) {
+    const j = await query(
+      `SELECT j.id, j.reversed_by_id, j.created_at, s.code AS subject_code
+         FROM journal_logs j
+         LEFT JOIN subjects s ON s.id = j.subject_id
+        WHERE j.book_id = $1 AND j.external_source = $2 AND j.external_id = $3`,
+      [bookId, external_source, extId]
+    );
+    if (j.rows.length > 0) {
+      const row = j.rows[0];
+      results.push({
+        external_id: extId,
+        status: row.reversed_by_id ? 'reversed' : 'posted',
+        journal_id: row.id,
+        subject_code: row.subject_code || null,
+        posted_at: row.created_at,
+      });
+      continue;
+    }
+    const pj = await query(
+      `SELECT id, status, review_note FROM pending_journals
+        WHERE book_id = $1 AND external_source = $2 AND external_id = $3
+        ORDER BY id DESC LIMIT 1`,
+      [bookId, external_source, extId]
+    );
+    if (pj.rows.length > 0) {
+      const row = pj.rows[0];
+      results.push({
+        external_id: extId,
+        status: row.status === 'rejected' ? 'rejected' : 'pending',
+        reject_reason: row.status === 'rejected' ? (row.review_note || null) : null,
+      });
+      continue;
+    }
+    results.push({ external_id: extId, status: 'missing' });
+  }
+  res.json({ results });
+}));
+
 router.post('/internal/v1/repush-ack', asyncHandler(async (req, res) => {
   const v = hmac.verifyRequest(req.headers, req.rawBody);
   if (!v.valid) return res.status(401).json({ error: v.reason });
