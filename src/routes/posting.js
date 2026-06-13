@@ -598,10 +598,38 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
     );
     if (jr.rows.length > 0) {
       const o = jr.rows[0];
-      if (o.is_composite) {
-        throw Object.assign(new Error('supersede 不支援 composite journal（POS 收班不可改單）'), { status: 422 });
-      }
-      if (!o.reversed_by_id && !o.reverses_id) {
+      if (o.is_composite && !o.reversed_by_id && !o.reverses_id) {
+        // HR Phase 5 H2：composite 沖銷（薪資重算改單／作廢）— 複製 legs 取負、逐帳戶回滾
+        // 與 journals.js 的 canonical reverse 同邏輯。POS 收班不會走 supersede（POS 端不 enqueue），故安全。
+        const legsRes = await client.query(
+          `SELECT * FROM journal_legs WHERE journal_log_id = $1 ORDER BY leg_no`, [o.id]);
+        const cins = await client.query(
+          `INSERT INTO journal_logs (
+             book_id, date, type, amount, subject_id, summary, note,
+             reverses_id, original_date, is_auto_posted, is_composite, created_by, updated_by
+           ) VALUES ($1, $2, 'composite', $3, $4, $5, $6, $7, $8, TRUE, TRUE, $9, $9)
+           RETURNING id`,
+          [req.book.id, o.date, Number(o.amount), o.subject_id,
+           `[來源單據${action === 'void' ? '作廢' : '修改'}沖銷] ${base_external_id}`,
+           String(reason).slice(0, 500), o.id, o.date, SYSTEM_BOT_USER_ID]);
+        const reverseId = cins.rows[0].id;
+        for (const leg of legsRes.rows) {
+          const negAmt = -Number(leg.amount);
+          await client.query(
+            `INSERT INTO journal_legs (journal_log_id, leg_no, kind, subject_id, account_id, amount, note)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [reverseId, leg.leg_no, leg.kind, leg.subject_id, leg.account_id, negAmt, leg.note]);
+          if (leg.kind === 'account') {
+            await client.query(
+              `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
+                WHERE id = $2 AND book_id = $3`, [negAmt, leg.account_id, req.book.id]);
+          }
+        }
+        await client.query(
+          `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
+          [reverseId, o.id]);
+        out.reversed_journal_id = reverseId;
+      } else if (!o.reversed_by_id && !o.reverses_id) {
         let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
         if (o.type === 'expense') {
           reverseType = 'income'; outAcc = null; inAcc = o.transfer_out_account_id;
