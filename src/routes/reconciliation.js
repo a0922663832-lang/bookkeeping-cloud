@@ -51,7 +51,10 @@ function requireRole(...roles) {
 
 // GET 的 HMAC 驗證：簽名訊息 = "<ts>.<path+query>"（LEO 端 signedGet 對齊）
 function verifySignedGet(req) {
-  if (!hmac.isConfigured()) return { valid: true }; // dev mode bypass（同 verifyRequest 行為）
+  // 沒設密鑰:只有本機開發明確開 HMAC_ALLOW_UNSIGNED=1 才放行(同 verifyRequest;主 repo 包 16 B1)
+  if (!hmac.isConfigured()) {
+    return hmac.allowUnsigned() ? { valid: true } : { valid: false, reason: hmac.NOT_CONFIGURED_REASON };
+  }
   const ts = req.headers['x-timestamp'];
   const sig = String(req.headers['x-signature'] || '').replace(/^sha256=/, '');
   if (!ts || !sig) return { valid: false, reason: 'missing signature headers' };

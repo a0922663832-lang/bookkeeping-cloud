@@ -299,6 +299,13 @@ app.use((err, req, res, next) => {
 });
 
 async function start() {
+  // 主 repo 包 16 B1:正式環境沒設 WEBHOOK_HMAC_SECRET → 拒絕啟動(否則 /internal/* 任何人都能記帳)
+  try {
+    require('./utils/hmac').assertStartupConfig();
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
   const pool = getPool();
   try {
     await runMigrations(pool);

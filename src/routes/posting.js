@@ -363,6 +363,10 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
       await logWebhookInbound(req, req.book.id, false, 401, { error: 'invalid X-Posting-Token' });
       return res.status(401).json({ error: 'invalid or missing X-Posting-Token' });
     }
+  } else if (!hmac.allowUnsigned()) {
+    // 主 repo 包 16 B1:沒設密鑰不再全部放行(只有本機開發明確開 HMAC_ALLOW_UNSIGNED=1 才放)
+    await logWebhookInbound(req, req.book.id, false, 401, { error: hmac.NOT_CONFIGURED_REASON });
+    return res.status(401).json({ error: hmac.NOT_CONFIGURED_REASON });
   }
 
   const b = req.body || {};
@@ -521,6 +525,9 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
     if (req.headers['x-posting-token'] !== SHARED_POSTING_TOKEN) {
       return res.status(401).json({ error: 'invalid or missing X-Posting-Token' });
     }
+  } else if (!hmac.allowUnsigned()) {
+    // 主 repo 包 16 B1:同 /internal/posting
+    return res.status(401).json({ error: hmac.NOT_CONFIGURED_REASON });
   }
 
   const b = req.body || {};
