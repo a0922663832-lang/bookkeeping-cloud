@@ -43,15 +43,27 @@ function verifyToken(token) {
 // 以前 token 7 天有效、只在登入時看 HR 的記帳雲權限:老闆把某人改成「無」或那人離職,
 // 手上的 token 7 天內照樣能看帳 / 改帳(book_members 的角色還在)。
 // 現在每個請求比一次 HR 名單(公開的 /api/auth/employees-roster,只列在職的人 + cloud_access;60 秒快取):
-// 不在名單或權限是 none → 401,並順手把他在各帳本的成員資格拿掉、users.cloud_access 記成 none。
+// 不在名單或權限是 none → 401(只擋、不刪成員資格:HR 那邊權限開回來就馬上能用,各帳本的角色都還在)。
 // HR 連不上就照舊放行(不讓 HR 停機連帶記帳雲整個不能用)。舊的 email 帳號(沒有 hr_emp_id)不受影響。
 const HR_BASE_URL = process.env.HR_BASE_URL || 'http://10.0.1.168:3000';
 const ROSTER_CACHE_MS = 60 * 1000;
 let rosterCache = { at: 0, map: null };
+let rosterDownUntil = 0;              // HR 連不上之後 30 秒內不再試(不然每個請求都多等 3 秒)
+let rosterInflight = null;            // 同一時間只打一次
+const ROSTER_DOWN_MS = 30 * 1000;
+const warnedAt = new Map();           // userId → 上次寫 log 的時間(同一人 10 分鐘只記一次,不洗版)
 const empOfUser = new Map();   // userId → { at, emp }
 
 async function hrRoster() {
   if (rosterCache.map && Date.now() - rosterCache.at < ROSTER_CACHE_MS) return rosterCache.map;
+  if (Date.now() < rosterDownUntil) return null;
+  if (rosterInflight) return rosterInflight;
+  rosterInflight = fetchRoster().then((m) => { if (!m) rosterDownUntil = Date.now() + ROSTER_DOWN_MS; return m; })
+    .finally(() => { rosterInflight = null; });
+  return rosterInflight;
+}
+
+async function fetchRoster() {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 3000);
   try {
@@ -83,13 +95,6 @@ async function revokedReason(userId) {
   return null;
 }
 
-async function revoke(userId) {
-  const { query } = require('./db');
-  try {
-    await query('DELETE FROM book_members WHERE user_id = $1', [userId]);
-    await query("UPDATE users SET cloud_access = 'none', updated_at = NOW() WHERE id = $1", [userId]);
-  } catch (e) { console.warn('[auth] 收回成員資格失敗:', e.message); }
-}
 
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -106,8 +111,8 @@ function requireAuth(req, res, next) {
   req.user = { id: payload.userId, email: payload.email };
   revokedReason(payload.userId).then(async (why) => {
     if (!why) return next();
-    console.warn(`[auth] user ${payload.userId} 擋下:${why}`);
-    await revoke(payload.userId);
+    const last = warnedAt.get(payload.userId) || 0;
+    if (Date.now() - last > 10 * 60 * 1000) { warnedAt.set(payload.userId, Date.now()); console.warn(`[auth] user ${payload.userId} 擋下:${why}`); }
     res.status(401).json({ error: `${why}，請重新登入或找老闆開通` });
   }).catch((e) => {
     console.warn('[auth] 查 HR 權限失敗,照舊放行:', e.message);
