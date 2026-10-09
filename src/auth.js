@@ -58,7 +58,8 @@ async function hrRoster() {
     const r = await fetch(`${HR_BASE_URL}/api/auth/employees-roster`, { signal: ctrl.signal });
     if (!r.ok) return null;
     const rows = await r.json();
-    if (!Array.isArray(rows)) return null;
+    // 空名單 = HR 那邊不正常(剛開機 / 資料庫沒接上)→ 當成連不上,不可以拿來把所有人踢掉、刪成員資格
+    if (!Array.isArray(rows) || rows.length === 0) return null;
     const map = new Map(rows.map((e) => [String(e.emp_id), e.cloud_access || 'none']));
     rosterCache = { at: Date.now(), map };
     return map;
