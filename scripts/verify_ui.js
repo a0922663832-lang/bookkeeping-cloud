@@ -64,7 +64,7 @@ function makeBackend(opts) {
 
   const xssSummary = '<img src=x onerror="window.__xss=1">客人訂金';
   const salary = {
-    id: 1, status: 'pending', external_source: 'leo_hr', external_id: 'salary-2026-10', payload: { event_type: 'payroll.posted' },
+    id: 1, status: 'pending', external_source: 'leo_hr', external_id: 'salary-2026-10', event_id: 'payroll.2026-10.1.v1', payload: {},
     proposed_journal: { type: 'composite', date: '2026-10-05', summary: '十月薪資', legs: [
       { leg_no: 1, kind: 'subject', subject_code: '6801', subject_parent_type: 't3', amount: 30000 },
       { leg_no: 2, kind: 'subject', subject_code: '6802', subject_parent_type: 't3', amount: 3000 },
@@ -75,7 +75,7 @@ function makeBackend(opts) {
   };
   const pos = {
     id: 2, status: 'pending', external_source: 'leo_pos', external_id: 'x"><script>window.__xss=2</script>',
-    payload: { event_type: 'pos_shift_settled', triggered_by_emp_id: '<b>E9</b>' },
+    event_id: 'pos_shift.settled.5.1760000000000', payload: { triggered_by_emp_id: '<b>E9</b>' },
     proposed_journal: { type: 'composite', date: '2026-10-09', summary: xssSummary, legs: [
       { leg_no: 1, kind: 'account', account_ref: '現金袋', amount: 1000 },
       { leg_no: 2, kind: 'subject', subject_code: '4101', subject_parent_type: 't1', amount: 1000, note: '<i onclick="window.__xss=4">備註</i>' },
@@ -83,7 +83,7 @@ function makeBackend(opts) {
   };
   const bad = {
     id: 3, status: 'pending', external_source: 'leo_pos', external_id: 'pos-bad',
-    payload: { event_type: 'pos_deposit_offset' },
+    event_id: 'pos_deposit_offset.9.1760000000000', payload: {},
     proposed_journal: { type: 'composite', date: '2026-10-09', summary: '不平衡的單', legs: [
       { leg_no: 1, kind: 'account', account_ref: '現金袋', amount: 500 },
       { leg_no: 2, kind: 'subject', subject_code: '4101', subject_parent_type: 't1', amount: 400 },
@@ -91,7 +91,7 @@ function makeBackend(opts) {
   };
   const exp = {
     id: 4, status: 'pending', external_source: 'leo_expense', external_id: 'EXP-1',
-    payload: { event_type: 'expense.created' },
+    event_id: 'expense.created.7.1760000000000', payload: {},
     proposed_journal: { type: 'expense', date: '2026-10-08', amount: 500, summary: '買菜' },
   };
   const done = {
@@ -129,7 +129,7 @@ function makeBackend(opts) {
   state.book = {
     code: 'NEST0001', name: '花現鳥巢', company_name: '花現鳥巢餐廳有限公司', tax_id: '12345678', currency: 'TWD', fiscal_year_start_month: 1,
     posting_mode: 'review',
-    posting_mode_per_source: { leo_pos: { pos_shift_settled: 'auto', pos_deposit_offset: 'review' }, leo_expense: 'review' },
+    posting_mode_per_source: { leo_pos: { pos_shift_settled: 'auto', pos_deposit_offset: 'review' }, leo_expense: { expense_created: 'auto' }, leo_inline: 'auto' },
   };
 
   state.recon = {
@@ -139,12 +139,12 @@ function makeBackend(opts) {
     results: {
       diff: [
         { external_source: 'leo_pos', external_id: "x'); window.__xss2=1;//", event_type: 'pos_shift_settled', leo_amount: 1000, detail: '金額不符:現場 $1,000、帳本 $900 <img src=x onerror=window.__xss=6>', can_repush: true },
-        { external_source: 'leo_expense', external_id: 'EXP-9', event_type: 'expense.created', leo_amount: 80, detail: '帳本沒收到(可補推)', can_repush: false },
+        { external_source: 'leo_expense', external_id: 'EXP-9', event_type: 'expense_created', leo_amount: 80, detail: '帳本沒收到(可補推)', can_repush: false },
         { external_source: 'leo_pos', external_id: 'busy-1', event_type: 'pos_shift_settled', detail: '補送中', can_repush: true },
       ],
-      in_transit: [{ external_source: 'leo_deposit', external_id: 'D-1', event_type: 'pos_deposit_offset', detail: '排隊中' }],
-      settled: [{ external_source: 'leo_hr', external_id: 'H-1', event_type: 'payroll.posted', leo_amount: 33000 },
-        { external_source: 'leo_expense', external_id: 'expense:OLD-9', event_type: 'expense.created', leo_amount: 50, cloud_status: 'stale', bucket: 'settled', detail: '現場清單已不再列出這筆' }],
+      in_transit: [{ external_source: 'leo_inline', external_id: 'D-1', event_type: 'deposit_paid', detail: '排隊中' }],
+      settled: [{ external_source: 'leo_hr', external_id: 'H-1', event_type: 'payroll_finalized', leo_amount: 33000 },
+        { external_source: 'leo_expense', external_id: 'expense:OLD-9', event_type: 'expense_created', leo_amount: 50, cloud_status: 'stale', bucket: 'settled', detail: '現場清單已不再列出這筆' }],
     },
   };
 
@@ -212,6 +212,7 @@ function makeBackend(opts) {
         from: url.searchParams.get('from'), to: url.searchParams.get('to'),
         counterparties: [
           { id: 1, type: 'expense', name: '停用廠商<b>x</b>', tax_id: '12345678', category: '食材', income_total: 0, expense_total: 500, transaction_count: 2, is_active: false },
+          { id: 3, type: 'income', name: '退款客戶', tax_id: null, category: '', income_total: -50, expense_total: 0, transaction_count: 1, is_active: true },
           { id: 2, type: 'income', name: '客戶甲', tax_id: null, category: '', income_total: 900, expense_total: 0, transaction_count: 1, is_active: true },
         ],
       });
@@ -484,7 +485,8 @@ async function main() {
       check('XSS:摘要 / 單號 / 觸發者 / 腳備註都被跳脫,沒有執行也沒有長出標籤', await P.evaluate(() => window.__xss === undefined && !document.querySelector('#list img, #list script, #list b, #list i')));
       check('XSS:摘要原文以文字顯示', (await P.textContent('#pj-2')).indexOf('<img src=x onerror="window.__xss=1">客人訂金') >= 0);
       check('術語白話:沒有 journal # / balance gap / composite / 英文事件名', !/journal #|balance gap|composite|pos_shift|expense\.created/.test(await P.textContent('#list')));
-      check('來源 / 事件翻成中文(點餐結帳、收班入帳)', /點餐結帳/.test(await P.textContent('#pj-2')) && /收班入帳/.test(await P.textContent('#pj-2')));
+      check('來源 / 事件翻成中文(點餐結帳、POS 收班)', /點餐結帳/.test(await P.textContent('#pj-2')) && /POS 收班/.test(await P.textContent('#pj-2')));
+      check('待審事件徽章由 event_id 前綴推出(薪資 / 訂金抵用 / 支出),不靠不存在的 payload.event_type', /薪資/.test(await P.textContent('#pj-1 .badge.bg-secondary')) && /訂金抵用/.test(await P.textContent('#pj-3 .badge.bg-secondary')) && /支出/.test(await P.textContent('#pj-4 .badge.bg-secondary')));
       await P.click('#filterBtns [data-filter=rejected]');
       await P.waitForSelector('#pj-5');
       const rejTxt = await P.textContent('#pj-5');
@@ -647,7 +649,7 @@ async function main() {
       const rowsTxt = await P.textContent('#rows');
       check('日期欄不含 T…Z 原始字串', !/\d{4}-\d{2}-\d{2}T/.test(rowsTxt), rowsTxt.slice(0, 120));
       check('2026-10-09T16:00Z 顯示成台北日期 2026-10-10', (await P.textContent('#rows tr[data-id="1"] td:first-child')) === '2026-10-10');
-      check('複式單顯示「複式」+「展開各腳」,不顯示英文 composite', /複式/.test(await P.textContent('#rows tr[data-id="4"]')) && /展開各腳/.test(await P.textContent('#rows tr[data-id="4"]')) && !/composite/.test(await P.textContent('#rows')));
+      check('複式單顯示「複式」+「展開明細」,不顯示英文 composite', /複式/.test(await P.textContent('#rows tr[data-id="4"]')) && /展開明細/.test(await P.textContent('#rows tr[data-id="4"]')) && !/composite/.test(await P.textContent('#rows')));
       check('複式單沒有 ✏️ 編輯鈕,但有 ↺ 沖銷鈕', (await P.$$('#rows tr[data-id="4"] [data-act=edit]')).length === 0 && (await P.$$('#rows tr[data-id="4"] [data-act=reverse]')).length === 1);
       check('已被沖銷的單:標「已沖銷」、沒有任何操作鈕', /已沖銷/.test(await P.textContent('#rows tr[data-id="2"]')) && (await P.$$('#rows tr[data-id="2"] [data-act]')).length === 0);
       check('沖銷單標「沖銷單」,沒有操作鈕', /沖銷單/.test(await P.textContent('#rows tr[data-id="3"]')) && (await P.$$('#rows tr[data-id="3"] [data-act]')).length === 0);
@@ -655,10 +657,10 @@ async function main() {
       check('下拉選項沒有 (t3)/(cash) 這類代號', !/\(t\d\)|\(cash\)|\(bank\)/.test(await P.$eval('#jmSubject', (e) => e.innerHTML)));
       check('XSS:科目名稱沒被執行', await P.evaluate(() => window.__xss === undefined));
 
-      // 展開各腳
+      // 展開明細
       await P.click('#rows tr[data-id="4"] [data-act=legs]');
       await P.waitForSelector('.legs-row');
-      check('展開各腳:呼叫 /legs,顯示 -$25,000 與帳戶名', callsTo(b, 'GET', /journals\/4\/legs$/).length === 1 && /-\$25,000/.test(await P.textContent('.legs-row')) && /玉山銀行/.test(await P.textContent('.legs-row')));
+      check('展開明細:呼叫 /legs,顯示 -$25,000 與帳戶名', callsTo(b, 'GET', /journals\/4\/legs$/).length === 1 && /-\$25,000/.test(await P.textContent('.legs-row')) && /玉山銀行/.test(await P.textContent('.legs-row')));
 
       // 沖銷:走 /reverse、要原因
       await P.click('#rows tr[data-id="1"] [data-act=reverse]');
@@ -672,7 +674,7 @@ async function main() {
       const rv = callsTo(b, 'POST', /journals\/1\/reverse$/);
       check('沖銷:POST /journals/1/reverse 帶 reason', rv.length === 1 && rv[0].body.reason === '重複記帳', rv);
       check('沖銷:完全沒有呼叫舊的 DELETE', b.calls.filter((c) => c.method === 'DELETE').length === 0);
-      check('沖銷:結果訊息接在該列旁邊(重畫清單後仍在)', /已沖銷第 1 筆/.test(await P.textContent('#rows tr[data-id="1"] + .cc-result-row')));
+      check('沖銷:結果訊息接在該列旁邊(重畫清單後仍在)', /已沖銷這一筆/.test(await P.textContent('#rows tr[data-id="1"] + .cc-result-row')));
 
       // 編輯:不送 type、日期不跳天
       await P.click('#rows tr[data-id="1"] [data-act=edit]');
@@ -693,6 +695,14 @@ async function main() {
       check('複式單詳情:列出各腳、日期無 T、來源中文', /玉山銀行/.test(dt) && !/\d{4}-\d{2}-\d{2}T/.test(dt) && /薪資/.test(dt) && !/leo_hr/.test(dt), dt);
       check('複式單詳情:沒有編輯鈕', (await P.$eval('#dtEditBtn', (e) => e.style.display)) === 'none');
       await P.evaluate(() => document.getElementById('detailModal').classList.remove('show'));
+
+      // 沖銷關係:不露內部編號
+      await P.click('#rows tr[data-id="2"] td:nth-child(4)');
+      await P.waitForFunction(() => /沖銷日/.test(document.getElementById('dtBody').textContent));
+      const dt2 = await P.textContent('#dtBody');
+      check('已被沖銷的單詳情:寫「已被沖銷(沖銷日 2026-10-02)」,畫面沒有 #數字', /已被沖銷\(沖銷日 2026-10-02\)/.test(dt2) && !/#\d/.test(dt2) && !/#\d/.test(await P.textContent('#detailModal .modal-header')), dt2);
+      await P.evaluate(() => document.getElementById('detailModal').classList.remove('show'));
+      check('明細頁畫面沒有「各腳」字樣', !/各腳/.test(await P.innerText('body')));
 
       // 記一筆:日期預設台北今天
       await P.click('#newBtn');
@@ -778,6 +788,7 @@ async function main() {
       await P.waitForSelector('#cContent:not(.d-none)');
       const cpTxt = await P.textContent('#cBody');
       check('對象報表:顯示統編欄、停用對象標「已停用」並變淡', /12345678/.test(cpTxt) && /已停用/.test(cpTxt) && (await P.$$eval('#cBody tr', (rs) => rs[0].getAttribute('style'))).indexOf('opacity') >= 0);
+      check('對象報表:收入為負數時照實顯示 -$50(不是破折號)', /-\$50(?!\d)/.test(cpTxt), cpTxt);
       check('對象報表:淨額負數 -$500、XSS 名稱被跳脫', /-\$500/.test(cpTxt) && await P.evaluate(() => !document.querySelector('#cBody b')));
       const cq = b.calls.filter((c) => c.path.endsWith('/reports/counterparties')).pop();
       check('對象報表請求帶 from/to', cq.query.from === taipeiDate(-30) && cq.query.to === taipeiDate(0), cq.query);
@@ -799,8 +810,8 @@ async function main() {
       const rows = cells.map((c) => c.join(' | '));
       const find = (k) => (cells.find((c) => c[0] === k) || []).join(' | ');
       check('唯讀表:POS 收班 = 直接入帳(每來源真實模式)', /直接入帳/.test(find('POS 收班')) && !/跟著全域/.test(find('POS 收班')), find('POS 收班'));
-      check('唯讀表:訂金抵用 / 支出單 = 進待審,老闆按過才入帳', /進待審,老闆按過才入帳/.test(find('訂金抵用')) && /進待審,老闆按過才入帳/.test(find('支出單')) && !/跟著全域/.test(find('支出單')), rows);
-      check('唯讀表:沒個別設定的來源(進貨 / 訂金 / 薪資)標「(跟著全域)」', ['進貨', '訂金', '薪資'].every((k) => /跟著全域/.test(find(k))), rows);
+      check('唯讀表:訂金抵用 = 進待審;支出單(事件鍵 expense_created)= 直接入帳;訂金 / 刷卡撥款(來源 leo_inline)= 直接入帳且不是跟著全域', /進待審,老闆按過才入帳/.test(find('訂金抵用')) && /直接入帳/.test(find('支出單')) && !/跟著全域/.test(find('支出單')) && /直接入帳/.test(find('訂金 / 刷卡撥款')) && !/跟著全域/.test(find('訂金 / 刷卡撥款')), rows);
+      check('唯讀表:沒個別設定的來源(進貨 / 薪資)標「(跟著全域)」', ['進貨', '薪資'].every((k) => /跟著全域/.test(find(k))), rows);
       check('唯讀表有全域預設列;說明「由技術端設定」', rows.some((r) => /^全域預設/.test(r)) && /這些由技術端設定,要改請告訴技術/.test(await P.textContent('#modeCard')));
       const seen = await P.innerText('body');
       check('設定頁(畫面上看得到的字)沒有 REVIEW/AUTO/MANUAL/posting_mode/webhook/403 這類術語', !/REVIEW|AUTO|MANUAL|posting_mode|webhook|journal_logs|403/.test(seen), seen.match(/REVIEW|AUTO|MANUAL|posting_mode|webhook|journal_logs|403/));
@@ -891,7 +902,7 @@ async function main() {
       check('補送鈕只在後端 can_repush=true 的列出現(「可補推」字樣但 can_repush=false 的不顯示)', btns.length === 1 && btns[0] === "x'); window.__xss2=1;//", btns);
       check('補送鈕沒有 onclick 字串(改 data-* + 事件委派)', (await P.$$('#diffList [onclick]')).length === 0);
       check('補送中的列顯示「補送中…」且不能按', /補送中/.test(await P.textContent('#diffList .ev-row:nth-child(3)')) && (await P.$$eval('#diffList .ev-row:nth-child(3) button', (b2) => b2[0].disabled)));
-      check('來源 / 事件名中文(點餐結帳、支出單、收班入帳、薪資)', /點餐結帳/.test(await P.textContent('#diffList')) && /薪資/.test(await P.textContent('#okList')) && !/payroll\.posted|leo_hr/.test(await P.textContent('#okList')) && /訂金/.test(await P.textContent('#transitList')));
+      check('來源 / 事件名中文(點餐結帳、支出單、收班入帳、薪資)', /點餐結帳/.test(await P.textContent('#diffList')) && /薪資/.test(await P.textContent('#okList')) && !/payroll_finalized|leo_hr|其他/.test(await P.textContent('#okList')) && /訂金/.test(await P.textContent('#transitList')) && /收訂金/.test(await P.textContent('#transitList')));
       check('金額 $1,000 顯示', /\$1,000/.test(await P.textContent('#diffList')));
       check('有跑過:空的欄位不出現「還沒對過帳」警告', !(await P.isVisible('#notRan')));
       check('GET 帶 include_stale=1(後端才會回舊紀錄)', g.query.include_stale === '1', g.query);

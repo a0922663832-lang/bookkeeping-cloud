@@ -444,13 +444,15 @@ if (CC.initPage('reports')) {
       const net = inc - exp;
       const typeLabel = c.type === 'income' ? '客戶' : c.type === 'expense' ? '廠商' : '雙向';
       const off = c.is_active === false;
+      const incCls = inc < 0 ? 'neg' : inc > 0 ? 'pos' : '';
+      const expCls = exp < 0 ? 'pos' : exp > 0 ? 'neg' : '';
       return `<tr${off ? ' style="opacity:.5"' : ''}>
         <td><span class="cp-type-chip ${esc(c.type)}">${typeLabel}</span>${c.is_temporary ? '<span class="badge bg-warning text-dark" style="font-size:10px">臨時</span>' : ''}${off ? '<span class="badge bg-secondary" style="font-size:10px">已停用</span>' : ''}</td>
         <td><strong>${esc(c.name)}</strong></td>
         <td><code>${esc(c.tax_id || '')}</code></td>
         <td>${esc(c.category || '')}</td>
-        <td class="amount-cell ${inc > 0 ? 'pos' : ''}">${inc > 0 ? esc(fmtMoney(inc)) : '—'}</td>
-        <td class="amount-cell ${exp > 0 ? 'neg' : ''}">${exp > 0 ? esc(fmtMoney(exp)) : '—'}</td>
+        <td class="amount-cell ${incCls}">${inc !== 0 ? esc(fmtMoney(inc)) : '—'}</td>
+        <td class="amount-cell ${expCls}">${exp !== 0 ? esc(fmtMoney(exp)) : '—'}</td>
         <td class="amount-cell ${net >= 0 ? 'pos' : 'neg'}">${esc(fmtMoney(net))}</td>
         <td class="amount-cell">${esc(c.transaction_count)}</td>
       </tr>`;

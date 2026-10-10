@@ -379,7 +379,7 @@ if (CC.initPage('setup')) {
     if (id) {
       const s = (cache.subjects || []).find((x) => x.id === id);
       if (!s) return;
-      $('smTitle').textContent = `編輯科目 #${id}`;
+      $('smTitle').textContent = '編輯科目';
       $('smId').value = id;
       $('smParentType').value = s.parent_type;
       $('smCode').value = s.code || '';
@@ -476,7 +476,7 @@ if (CC.initPage('setup')) {
     if (id) {
       const a = (cache.accounts || []).find((x) => x.id === id);
       if (!a) return;
-      $('amTitle').textContent = `編輯帳戶 #${id}`;
+      $('amTitle').textContent = '編輯帳戶';
       $('amId').value = id;
       $('amName').value = a.name;
       $('amType').value = a.type;
@@ -588,7 +588,7 @@ if (CC.initPage('setup')) {
     if (id) {
       const c = (cache.counterparties || []).find((x) => x.id === id);
       if (!c) return;
-      $('cmTitle').textContent = `編輯對象 #${id}`;
+      $('cmTitle').textContent = '編輯對象';
       $('cmId').value = id;
       $('cmName').value = c.name;
       $('cmType').value = c.type;

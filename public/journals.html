@@ -241,7 +241,7 @@ table.journals-table tr.is-reverse{background:#fff5f5}
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">記錄詳情 #<span id="dtId"></span></h5>
+        <h5 class="modal-title">記錄詳情</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body" id="dtBody"></div>
@@ -365,7 +365,7 @@ if (CC.initPage('journals')) {
 
       let subjectCell;
       if (isComposite) {
-        subjectCell = `<strong>複式記帳</strong> <button type="button" class="btn btn-link btn-sm p-0 align-baseline" data-act="legs" data-id="${esc(j.id)}">展開各腳</button>`;
+        subjectCell = `<strong>複式記帳</strong> <button type="button" class="btn btn-link btn-sm p-0 align-baseline" data-act="legs" data-id="${esc(j.id)}">展開明細</button>`;
       } else if (j.type === 'reclassify') {
         if (j.targets && j.targets.length > 0) {
           subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${esc(j.targets.length)} 個科目`;
@@ -437,7 +437,7 @@ if (CC.initPage('journals')) {
     const tr = rowEl(id);
     if (!tr) return;
     const next = tr.nextElementSibling;
-    if (next && next.classList.contains('legs-row')) { next.remove(); btn.textContent = '展開各腳'; return; }
+    if (next && next.classList.contains('legs-row')) { next.remove(); btn.textContent = '展開明細'; return; }
     btn.disabled = true;
     try {
       const r = await api(`/B/${BOOK}/journals/${id}/legs`);
@@ -451,7 +451,7 @@ if (CC.initPage('journals')) {
       btn.textContent = '收起';
     } catch (e) {
       if (e.handled) return;
-      inlineResult(tr, false, '讀取各腳失敗:' + e.message);
+      inlineResult(tr, false, '讀取明細失敗:' + e.message);
     } finally { btn.disabled = false; }
   }
 
@@ -463,14 +463,14 @@ if (CC.initPage('journals')) {
   // ── 沖銷(一律走沖銷專用入口,要寫原因) ─────────────────────────
   async function doReverse(id, ctxEl) {
     const reason = await askText({
-      title: `沖銷第 ${id} 筆?`,
+      title: '沖銷這一筆?',
       text: '沖銷會新增一筆方向相反的紀錄把它抵銷掉,原本這筆會保留起來,方便查帳。',
       label: '沖銷原因(必填)', required: true, requiredText: '請寫一下為什麼要沖銷', okText: '沖銷', danger: true,
     });
     if (reason === null) return false;
     try {
       await api(`/B/${BOOK}/journals/${id}/reverse`, { method: 'POST', body: { reason } });
-      lastResult = { id, ok: true, msg: `✓ 已沖銷第 ${id} 筆(原因:${reason})` };
+      lastResult = { id, ok: true, msg: `✓ 已沖銷這一筆(原因:${reason})` };
       return true;
     } catch (e) {
       if (e.handled) return false;
@@ -621,7 +621,7 @@ if (CC.initPage('journals')) {
       if (editId) {
         delete payload.type;          // 類型存下去就不能改;要換類型請沖銷後重記
         await api(`/B/${BOOK}/journals/${editId}`, { method: 'PATCH', body: payload });
-        lastResult = { id: Number(editId), ok: true, msg: `✓ 第 ${editId} 筆已儲存` };
+        lastResult = { id: Number(editId), ok: true, msg: '✓ 已儲存' };
       } else {
         await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
         lastResult = null;
@@ -648,7 +648,7 @@ if (CC.initPage('journals')) {
       if (j.reverses_id) { inlineResult(where, false, '沖銷單不能編輯'); return; }
       if (j.type === 'composite' || j.is_composite) { inlineResult(where, false, '複式記帳(收班、薪資等)不能直接改,要改請沖銷後重記'); return; }
       $('jmEditId').value = id;
-      $('jmTitle').textContent = `編輯 #${id}`;
+      $('jmTitle').textContent = '編輯這一筆';
       if (CC.can(myRole, 'admin')) $('jmReverseBtn').classList.remove('d-none'); else $('jmReverseBtn').classList.add('d-none');
       $('jmTabBar').style.pointerEvents = 'none';
       $('jmTabBar').style.opacity = '.5';
@@ -694,13 +694,18 @@ if (CC.initPage('journals')) {
       const r = await api(`/B/${BOOK}/journals/${id}`);
       const j = r.journal;
       const isComposite = j.type === 'composite' || j.is_composite === true;
-      $('dtId').textContent = j.id;
+      // 沖銷關係只顯示日期,不露內部編號
+      const dateOf = async (otherId) => {
+        try { return fmtDate(((await api(`/B/${BOOK}/journals/${otherId}`)).journal || {}).date); } catch (_) { return ''; }
+      };
+      const reversedOn = j.reversed_by_id ? await dateOf(j.reversed_by_id) : '';
+      const reversesOn = j.reverses_id ? await dateOf(j.reverses_id) : '';
       let html = '<div class="detail-meta">';
       html += `<div><strong>日期</strong>${esc(fmtDate(j.date))}</div>`;
       html += `<div><strong>類型</strong><span class="type-chip ${esc(isComposite ? 'composite' : j.type)}">${esc(typeName(isComposite ? 'composite' : j.type))}</span></div>`;
       html += `<div><strong>金額</strong>${esc(fmtMoney(j.amount))}</div>`;
       if (isComposite) {
-        html += '<div><strong>各腳明細</strong></div><div id="dtLegs" class="legs-box mt-1">讀取中...</div>';
+        html += '<div><strong>明細</strong></div><div id="dtLegs" class="legs-box mt-1">讀取中...</div>';
       } else if (j.type === 'reclassify') {
         html += `<div><strong>原科目</strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</div>`;
         if (j.targets && j.targets.length > 0) {
@@ -722,8 +727,8 @@ if (CC.initPage('journals')) {
       if (j.external_source) html += `<div><strong>來源</strong>${esc(CC.sourceName(j.external_source))}(單號 ${esc(j.external_id || '')})</div>`;
       if (j.is_auto_posted) html += `<div><strong>入帳方式</strong>由現場系統自動入帳</div>`;
       if (j.edit_count > 0) html += `<div><strong>編輯紀錄</strong>已編輯 ${esc(j.edit_count)} 次(最後 ${esc(fmtDateTime(j.edited_at))})</div>`;
-      if (j.reversed_by_id) html += `<div class="text-danger"><strong>狀態</strong>已被 #${esc(j.reversed_by_id)} 沖銷</div>`;
-      if (j.reverses_id) html += `<div class="text-secondary"><strong>狀態</strong>本筆是 #${esc(j.reverses_id)} 的沖銷單</div>`;
+      if (j.reversed_by_id) html += `<div class="text-danger"><strong>狀態</strong>已被沖銷${reversedOn ? `(沖銷日 ${esc(reversedOn)})` : ''}</div>`;
+      if (j.reverses_id) html += `<div class="text-secondary"><strong>狀態</strong>這是一張沖銷單${reversesOn ? `(沖掉 ${esc(reversesOn)} 那筆)` : ''}</div>`;
       html += `<div class="text-muted small mt-2">建立於 ${esc(fmtDateTime(j.created_at))}</div>`;
       html += '</div>';
       $('dtBody').innerHTML = html;
@@ -740,7 +745,7 @@ if (CC.initPage('journals')) {
         api(`/B/${BOOK}/journals/${id}/legs`).then((lr) => {
           $('dtLegs').innerHTML = legsTableHtml(lr.legs);
         }).catch((e) => {
-          if (!e.handled) $('dtLegs').textContent = '讀取各腳失敗:' + e.message;
+          if (!e.handled) $('dtLegs').textContent = '讀取明細失敗:' + e.message;
         });
       }
     } catch (e) {

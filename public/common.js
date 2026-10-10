@@ -95,16 +95,44 @@
     income_account: '收款待轉', liability: '負債/應付', asset: '其他資產', virtual: '虛擬(暫存)',
   };
   var SUBJ_TYPE_NAME = { t1: '收入', t2: '成本', t3: '費用', t4: '轉帳', t5: '股東權益/業外' };
+  // 對照主 repo cloudBookkeepingClient.js / routes/integrations.js 實際送出的值
   var SOURCE_NAME = {
-    leo_pos: '點餐結帳', leo_expense: '支出單', leo_inventory: '進貨', leo_deposit: '訂金', leo_hr: '薪資',
+    leo_pos: '點餐結帳', leo_expense: '支出單', leo_inventory: '進貨', leo_inline: '訂金 / 刷卡撥款', leo_hr: '薪資',
   };
   var EVENT_NAME = {
-    pos_shift_settled: '收班入帳', pos_deposit_offset: '訂金抵用', 'expense.created': '支出單',
+    pos_shift_settled: 'POS 收班', pos_deposit_offset: '訂金抵用',
+    expense_created: '支出', 'expense.created': '支出',
+    invoice_receipt: '進貨發票', invoice_payment: '進貨付款', vendor_monthly_bill_paid: '月結帳單付款',
+    deposit_paid: '收訂金', deposit_refunded: '退訂金', deposit_voided: '訂金作廢',
+    inline_payout_transfer: '刷卡撥款', inline_payout_fee: '刷卡手續費',
+    payroll_finalized: '薪資', insurance_payment: '勞健保',
   };
+  // 待審單只存 event_id(沒有 event_type 欄),從 event_id 前綴推回事件
+  var EVENT_ID_PREFIX = [
+    ['expense.created.', 'expense_created'], ['expense.supersede.', 'expense_created'], ['expense.void.', 'expense_created'],
+    ['invoice.receipt.', 'invoice_receipt'], ['invoice.payment.', 'invoice_payment'], ['bill.paid.', 'vendor_monthly_bill_paid'],
+    ['deposit.paid.', 'deposit_paid'], ['deposit.supersede.', 'deposit_paid'], ['deposit.refund.', 'deposit_refunded'], ['deposit.void.', 'deposit_voided'],
+    ['inline_payout.', 'inline_payout_transfer'],
+    ['pos_shift.', 'pos_shift_settled'], ['pos_deposit_offset.', 'pos_deposit_offset'],
+    ['payroll.', 'payroll_finalized'], ['insurance_payment.', 'insurance_payment'],
+  ];
+  // 待審單的事件名:有 event_type 就用,否則看 event_id,都沒有回 ''
+  function pendingEventName(p) {
+    if (!p) return '';
+    var t = p.event_type || (p.payload && p.payload.event_type) || '';
+    var id = String(p.event_id || '');
+    if (!t) {
+      for (var i = 0; i < EVENT_ID_PREFIX.length; i++) {
+        if (id.indexOf(EVENT_ID_PREFIX[i][0]) === 0) { t = EVENT_ID_PREFIX[i][1]; break; }
+      }
+      if (t === 'inline_payout_transfer' && /\.fee$/.test(id)) t = 'inline_payout_fee';
+    }
+    return t ? eventName(t) : '';
+  }
   var MODE_TEXT = { review: '進待審,老闆按過才入帳', auto: '直接入帳', manual: '拒收' };
 
-  function sourceName(s) { return SOURCE_NAME[s] || '外部系統'; }
-  function eventName(e) { return EVENT_NAME[e] || '其他事件'; }
+  function sourceName(s) { return SOURCE_NAME[s] || '其他'; }
+  function eventName(e) { return EVENT_NAME[e] || '其他'; }
 
   // ───────────────────────── 錯誤文字 ─────────────────────────
   function friendlyError(status, data) {
@@ -502,7 +530,7 @@
   CC.legGap = legGap; CC.pendingAmount = pendingAmount; CC.friendlyError = friendlyError;
   CC.go = go; CC.logout = logout; CC.deviceId = deviceId; CC.getToken = getToken; CC.getUser = getUser;
   CC.ROLE_NAME = ROLE_NAME; CC.ACCT_TYPE_NAME = ACCT_TYPE_NAME; CC.SUBJ_TYPE_NAME = SUBJ_TYPE_NAME;
-  CC.MODE_TEXT = MODE_TEXT; CC.sourceName = sourceName; CC.eventName = eventName;
+  CC.MODE_TEXT = MODE_TEXT; CC.sourceName = sourceName; CC.eventName = eventName; CC.pendingEventName = pendingEventName;
   CC.CJK = CJK;
 
   global.CC = CC;

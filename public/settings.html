@@ -117,9 +117,9 @@ if (CC.initPage('settings')) {
   const SOURCES = [
     { source: 'leo_pos', event: 'pos_shift_settled', label: 'POS 收班' },
     { source: 'leo_pos', event: 'pos_deposit_offset', label: '訂金抵用' },
-    { source: 'leo_expense', event: 'expense.created', label: '支出單' },
+    { source: 'leo_expense', event: 'expense_created', label: '支出單' },
     { source: 'leo_inventory', event: null, label: '進貨' },
-    { source: 'leo_deposit', event: null, label: '訂金' },
+    { source: 'leo_inline', event: null, label: '訂金 / 刷卡撥款' },
     { source: 'leo_hr', event: null, label: '薪資' },
   ];
 

@@ -118,7 +118,8 @@ if (CC.initPage('pending')) {
     const rejReason = p.rejected_reason ? `<div class="small text-danger mt-1">退回原因:${esc(p.rejected_reason)}</div>` : '';
     const triggeredByLine = triggeredBy ? `<span class="badge bg-light text-dark ms-2" title="觸發這筆推送的員工編號">👤 ${esc(triggeredBy)}</span>` : '';
     const legsHtml = isComposite && (j.legs || []).length > 0 ? renderLegs(j.legs) : '';
-    const evt = p.payload && p.payload.event_type ? `<span class="badge bg-secondary ms-1">${esc(CC.eventName(p.payload.event_type))}</span>` : '';
+    const evtName = CC.pendingEventName(p);
+    const evt = evtName ? `<span class="badge bg-secondary ms-1">${esc(evtName)}</span>` : '';
     const check = canActions && mayAct ? `<input type="checkbox" class="pj-check" data-pj-check="${esc(p.id)}" aria-label="勾選這一筆"${selected.has(p.id) ? ' checked' : ''}>` : '';
     const lockTitle = '你的角色只能查看,不能核准或退回';
     const actions = canActions ? `
