@@ -30,187 +30,308 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
 .amount-display{font-size:22px;font-weight:700;color:#1a1814}
 .btn-primary{background:#6a3a8a;border-color:#6a3a8a}
 .btn-primary:hover{background:#4a2a6a;border-color:#4a2a6a}
-.todo-link{color:#888;font-size:13px;text-decoration:none;cursor:not-allowed}
+.pj-check{width:22px;height:22px;margin-right:8px;vertical-align:middle}
+.batch-bar{background:#fff;border-radius:14px;padding:12px 18px;box-shadow:0 2px 12px rgba(0,0,0,.05);margin-bottom:12px}
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg shadow-sm">
-  <div class="container">
-    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
-    <div class="navbar-nav me-auto">
-      <a class="nav-link" href="/dashboard">儀表板</a>
-      <a class="nav-link active" href="/pending">待審</a>
-      <a class="nav-link" href="/journals?new=1">記一筆</a>
-      <a class="nav-link" href="/journals">明細</a>
-      <a class="nav-link" href="/reports">報表</a>
-      <a class="nav-link" href="/setup">主檔</a>
-      <a class="nav-link" href="/settings">設定</a>
-    </div>
-    <div class="navbar-nav">
-      <span class="navbar-text me-3" id="userName"></span>
-      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
-    </div>
-  </div>
-</nav>
+<div id="navMount"></div>
 
 <div class="container py-4">
-  <div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <h4 class="mb-0">待審入帳</h4>
-    <div class="btn-group btn-group-sm" role="group" id="filterBtns">
-      <button type="button" class="btn btn-primary" data-filter="pending">待審</button>
-      <button type="button" class="btn btn-outline-secondary" data-filter="approved">已核准</button>
-      <button type="button" class="btn btn-outline-secondary" data-filter="auto_posted">自動入帳</button>
-      <button type="button" class="btn btn-outline-secondary" data-filter="rejected">已退回</button>
-      <button type="button" class="btn btn-outline-secondary" data-filter="all">全部</button>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+      <div class="btn-group btn-group-sm" role="group" id="filterBtns">
+        <button type="button" class="btn btn-primary" data-filter="pending">待審</button>
+        <button type="button" class="btn btn-outline-secondary" data-filter="approved">已核准</button>
+        <button type="button" class="btn btn-outline-secondary" data-filter="auto_posted">自動入帳</button>
+        <button type="button" class="btn btn-outline-secondary" data-filter="rejected">已退回</button>
+        <button type="button" class="btn btn-outline-secondary" data-filter="all">全部</button>
+      </div>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshBtn">重新整理</button>
     </div>
   </div>
+
+  <div class="batch-bar d-none" id="batchBar">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+      <label class="mb-0"><input type="checkbox" class="pj-check" id="checkAll">全選這一頁</label>
+      <button type="button" class="btn btn-success btn-sm" id="batchBtn" disabled>核准勾選的 0 筆</button>
+      <span class="text-muted small" id="batchHint">在每一張卡片左邊打勾,就能一次核准多筆</span>
+    </div>
+  </div>
+
   <div class="card-list">
     <div id="list" class="text-center text-muted py-4">載入中...</div>
   </div>
+
+  <div class="d-flex justify-content-between align-items-center mt-3 d-none" id="pager">
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="prevBtn">← 上一頁</button>
+    <span class="text-muted small" id="pagerInfo"></span>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="nextBtn">下一頁 →</button>
+  </div>
 </div>
 
+<script src="/common.js"></script>
 <script>
-const token = localStorage.getItem('token');
-if (!token) location.href = '/';
-const user = JSON.parse(localStorage.getItem('user') || '{}');
-document.getElementById('userName').textContent = user.name || '';
-document.getElementById('logoutBtn').addEventListener('click', (e) => {
-  e.preventDefault();
-  localStorage.clear();
-  location.href = '/';
-});
+if (CC.initPage('pending')) {
+  const PAGE = 50;
+  const STATUS_CLS = { pending: 'bg-warning text-dark', approved: 'bg-success', auto_posted: 'bg-info', rejected: 'bg-secondary' };
+  const STATUS_TXT = { pending: '待審', approved: '已核准', auto_posted: '自動入帳', rejected: '已退回' };
+  let currentFilter = 'pending';
+  let offset = 0;
+  let total = 0;
+  let myRole = null;
+  const selected = new Set();
 
-const BOOK = 'NEST0001';
-let currentFilter = 'pending';
+  function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類', composite: '複式記帳' })[t] || '其他'; }
+  function statusBadge(s) {
+    return `<span class="badge pj-status ${STATUS_CLS[s] || 'bg-secondary'}">${esc(STATUS_TXT[s] || '其他')}</span>`;
+  }
 
-async function api(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({ Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, opts.headers || {});
-  const r = await fetch(path, opts);
-  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
-  return r.json();
-}
+  // 複式單的各腳明細
+  function renderLegs(legs) {
+    if (!legs || legs.length === 0) return '';
+    const rows = legs.map(l => {
+      const amt = Number(l.amount) || 0;
+      const amtCls = amt < 0 ? 'leg-amount-neg' : 'leg-amount-pos';
+      const target = l.kind === 'subject'
+        ? `<span class="leg-subject">📊 ${esc(l.subject_code || l.subject_name || '科目')}</span>`
+        : `<span class="leg-account">🏦 ${esc(l.account_ref || l.account_name || '帳戶')}</span>`;
+      const noteCell = l.note ? `<span class="text-muted small">${esc(l.note)}</span>` : '';
+      return `<tr><td>${esc(l.leg_no || '')}</td><td>${target}</td><td class="${amtCls} text-end">${esc(fmtSigned(amt))}</td><td>${noteCell}</td></tr>`;
+    }).join('');
+    const g = CC.legGap(legs);
+    let gapMsg = '';
+    if (g.hasT4) gapMsg = '<div class="small text-danger mt-1">複式單裡不該有轉帳科目,請退回並通知技術</div>';
+    else if (g.known && g.gap !== 0) gapMsg = `<div class="small text-danger mt-1">借貸不平衡,差 ${esc(fmtMoney(Math.abs(g.gap)))},請退回並通知技術</div>`;
+    return `<table class="legs-table mt-2"><thead><tr><th>#</th><th>項目</th><th class="text-end">金額</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table>${gapMsg}`;
+  }
 
-function fmt(v) { return new Intl.NumberFormat('zh-TW').format(parseFloat(v || 0)); }
-function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類',composite:'複式記帳'})[t] || t; }
-
-// M5 Phase 2: render composite journal legs 細項表
-function renderLegs(legs) {
-  if (!legs || legs.length === 0) return '';
-  const rows = legs.map(l => {
-    const amt = +l.amount;
-    const amtCls = amt < 0 ? 'leg-amount-neg' : 'leg-amount-pos';
-    const target = l.kind === 'subject'
-      ? `<span class="leg-subject">📊 ${l.subject_code || l.subject_id || '?'}</span>`
-      : `<span class="leg-account">🏦 ${l.account_ref || (l.account_id ? '#'+l.account_id : '?')}</span>`;
-    const noteCell = l.note ? `<span class="text-muted small">${l.note}</span>` : '';
-    return `<tr><td>${l.leg_no || ''}</td><td>${target}</td><td class="${amtCls} text-end">${amt >= 0 ? '+' : ''}$${fmt(Math.abs(amt))}</td><td>${noteCell}</td></tr>`;
-  }).join('');
-  // 算 balance gap
-  const accSum = legs.filter(l => l.kind === 'account').reduce((s, l) => s + (+l.amount || 0), 0);
-  const subSum = legs.filter(l => l.kind === 'subject').reduce((s, l) => s + (+l.amount || 0), 0);
-  const gap = accSum - subSum;
-  const gapMsg = Math.abs(gap) > 0.01
-    ? `<div class="small text-warning mt-1">⚠ balance gap: $${fmt(gap)} (D3 comp 場景容許)</div>`
-    : '';
-  return `<table class="legs-table mt-2"><thead><tr><th>#</th><th>對象</th><th class="text-end">金額</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table>${gapMsg}`;
-}
-function statusBadge(s) {
-  const map = {pending:'bg-warning text-dark', approved:'bg-success', auto_posted:'bg-info', rejected:'bg-secondary'};
-  const txt = {pending:'待審', approved:'已核准', auto_posted:'自動入帳', rejected:'已退回'};
-  return `<span class="badge ${map[s]||'bg-secondary'}">${txt[s]||s}</span>`;
-}
-
-async function load() {
-  document.getElementById('list').innerHTML = '<div class="text-center text-muted py-4">載入中...</div>';
-  try {
-    const r = await api(`/B/${BOOK}/pending-journals?status=${currentFilter}`);
-    if (r.count === 0) {
-      const emptyMsg = currentFilter === 'pending' ? '✓ 沒有待審項目' : '無資料';
-      document.getElementById('list').innerHTML = `<div class="text-center text-success py-4">${emptyMsg}</div>`;
-      return;
-    }
-    document.getElementById('list').innerHTML = r.pending_journals.map(p => {
-      const j = p.proposed_journal || {};
-      const canActions = p.status === 'pending';
-      const triggeredBy = (p.payload && (p.payload.triggered_by_emp_id || p.payload.triggered_by_external_emp_id)) || null;
-      const isComposite = j.type === 'composite';
-      const legs = j.legs || [];
-      const approverInfo = p.approved_by_name ? `· 核准: ${p.approved_by_name} @ ${new Date(p.approved_at).toLocaleString('zh-TW')}` : '';
-      const rejecterInfo = p.rejected_by_name ? `· 退回: ${p.rejected_by_name} @ ${new Date(p.rejected_at).toLocaleString('zh-TW')}` : '';
-      const rejReason = p.rejected_reason ? `<div class="small text-danger mt-1">退回原因: ${p.rejected_reason}</div>` : '';
-      const triggeredByLine = triggeredBy ? `<span class="badge bg-light text-dark ms-2" title="觸發此推送的員工 emp_id">👤 ${triggeredBy}</span>` : '';
-      const legsHtml = isComposite && legs.length > 0 ? renderLegs(legs) : '';
-      const eventTypeBadge = p.payload && p.payload.event_type ? `<span class="badge bg-secondary ms-1">${p.payload.event_type || ''}</span>` : '';
-
-      return `<div class="pj-row" id="pj-${p.id}">
+  function cardHtml(p) {
+    const j = p.proposed_journal || {};
+    const canActions = p.status === 'pending';
+    const mayAct = CC.can(myRole, 'write');
+    const triggeredBy = (p.payload && (p.payload.triggered_by_emp_id || p.payload.triggered_by_external_emp_id)) || null;
+    const isComposite = j.type === 'composite';
+    const approverInfo = p.approved_by_name ? `· 核准:${esc(p.approved_by_name)} ${esc(fmtDateTime(p.approved_at))}` : '';
+    const rejecterInfo = p.rejected_by_name ? `· 退回:${esc(p.rejected_by_name)} ${esc(fmtDateTime(p.rejected_at))}` : '';
+    const rejReason = p.rejected_reason ? `<div class="small text-danger mt-1">退回原因:${esc(p.rejected_reason)}</div>` : '';
+    const triggeredByLine = triggeredBy ? `<span class="badge bg-light text-dark ms-2" title="觸發這筆推送的員工編號">👤 ${esc(triggeredBy)}</span>` : '';
+    const legsHtml = isComposite && (j.legs || []).length > 0 ? renderLegs(j.legs) : '';
+    const evt = p.payload && p.payload.event_type ? `<span class="badge bg-secondary ms-1">${esc(CC.eventName(p.payload.event_type))}</span>` : '';
+    const check = canActions && mayAct ? `<input type="checkbox" class="pj-check" data-pj-check="${esc(p.id)}" aria-label="勾選這一筆"${selected.has(p.id) ? ' checked' : ''}>` : '';
+    const lockTitle = '你的角色只能查看,不能核准或退回';
+    const actions = canActions ? `
+        <div class="pj-actions">
+          <button class="btn btn-success btn-sm me-1" data-act="approve" data-id="${esc(p.id)}"${mayAct ? '' : ` disabled title="${lockTitle}"`}>✓ 核准</button>
+          <button class="btn btn-outline-danger btn-sm" data-act="reject" data-id="${esc(p.id)}"${mayAct ? '' : ` disabled title="${lockTitle}"`}>✗ 退回</button>
+        </div>` : '';
+    return `<div class="pj-row" id="pj-${esc(p.id)}" data-id="${esc(p.id)}">
         <div class="row align-items-center">
           <div class="col-md-2">
-            <span class="type-badge type-${j.type}">${typeName(j.type)}</span>
-            <div class="amount-display mt-2">$${fmt(j.amount)}</div>
+            ${check}<span class="type-badge type-${esc(j.type || 'expense')}">${esc(typeName(j.type))}</span>
+            <div class="amount-display mt-2">${esc(fmtMoney(CC.pendingAmount(p)))}</div>
           </div>
           <div class="col-md-7">
-            <div class="mb-1">${statusBadge(p.status)}<span class="text-muted small ms-2">${j.date || '-'}</span>${triggeredByLine}${eventTypeBadge}</div>
-            <div><strong>${j.summary || '(無摘要)'}</strong></div>
+            <div class="mb-1">${statusBadge(p.status)}<span class="text-muted small ms-2">${esc(j.date ? fmtDate(j.date) : '-')}</span>${triggeredByLine}${evt}</div>
+            <div><strong>${esc(j.summary || '(沒有摘要)')}</strong></div>
             <div class="small text-muted mt-1">
-              來源: ${p.external_source}:${p.external_id}
-              ${p.reviewed_at ? '· 審核時間 ' + new Date(p.reviewed_at).toLocaleString('zh-TW') : ''}
+              來源:${esc(CC.sourceName(p.external_source))}(單號 ${esc(p.external_id)})
+              ${p.reviewed_at ? '· 審核時間 ' + esc(fmtDateTime(p.reviewed_at)) : ''}
               ${approverInfo}${rejecterInfo}
             </div>
-            ${p.review_note ? `<div class="small text-muted">備註: ${p.review_note}</div>` : ''}
+            ${p.review_note ? `<div class="small text-muted">備註:${esc(p.review_note)}</div>` : ''}
             ${rejReason}
             ${legsHtml}
           </div>
           <div class="col-md-3 text-end">
-            ${canActions ? `
-              <button class="btn btn-success btn-sm me-1" onclick="approve(${p.id})">✓ 核准</button>
-              <button class="btn btn-outline-danger btn-sm" onclick="reject(${p.id})">✗ 退回</button>` : ''}
-            ${p.resulting_journal_id ? `<div class="small text-muted mt-2">journal #${p.resulting_journal_id}</div>` : ''}
+            ${actions}
+            ${p.resulting_journal_id ? '<div class="small text-muted mt-2">已寫入帳本</div>' : ''}
           </div>
         </div>
       </div>`;
-    }).join('');
-  } catch (e) {
-    document.getElementById('list').innerHTML = '<div class="alert alert-danger">' + e.message + '</div>';
   }
-}
 
-async function approve(id) {
-  const note = prompt('核准備註 (可空白):', '');
-  if (note === null) return;
-  try {
-    const r = await api(`/B/${BOOK}/pending-journals/${id}/approve`, { method: 'POST', body: JSON.stringify({ review_note: note || null }) });
-    if (r.error) { alert('失敗: ' + r.error); return; }
-    alert(`✓ 已核准, journal #${r.journal.id} 已寫入帳`);
-    load();
-  } catch (e) { alert('錯誤: ' + e.message); }
-}
+  function updateBatchBar() {
+    const bar = $('batchBar');
+    const show = currentFilter === 'pending' && CC.can(myRole, 'write') && document.querySelector('[data-pj-check]');
+    bar.classList.toggle('d-none', !show);
+    const n = selected.size;
+    $('batchBtn').textContent = `核准勾選的 ${n} 筆`;
+    $('batchBtn').disabled = n === 0;
+    const boxes = [...document.querySelectorAll('[data-pj-check]')];
+    $('checkAll').checked = boxes.length > 0 && boxes.every(b => b.checked);
+  }
 
-async function reject(id) {
-  const note = prompt('退回原因 (可空白):', '');
-  if (note === null) return;
-  try {
-    const r = await api(`/B/${BOOK}/pending-journals/${id}/reject`, { method: 'POST', body: JSON.stringify({ review_note: note || null }) });
-    if (r.error) { alert('失敗: ' + r.error); return; }
-    alert('✗ 已退回');
-    load();
-  } catch (e) { alert('錯誤: ' + e.message); }
-}
+  function updatePager() {
+    const pager = $('pager');
+    if (total <= PAGE) { pager.classList.add('d-none'); return; }
+    pager.classList.remove('d-none');
+    const from = offset + 1;
+    const to = Math.min(offset + PAGE, total);
+    $('pagerInfo').textContent = `第 ${from}–${to} 筆,共 ${total} 筆`;
+    $('prevBtn').disabled = offset <= 0;
+    $('nextBtn').disabled = offset + PAGE >= total;
+  }
 
-document.querySelectorAll('#filterBtns [data-filter]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    currentFilter = btn.dataset.filter;
-    document.querySelectorAll('#filterBtns [data-filter]').forEach(b => {
-      b.classList.remove('btn-primary');
-      b.classList.add('btn-outline-secondary');
-    });
-    btn.classList.add('btn-primary');
-    btn.classList.remove('btn-outline-secondary');
-    load();
+  async function load() {
+    $('list').innerHTML = '<div class="text-center text-muted py-4">載入中...</div>';
+    selected.clear();
+    try {
+      const r = await api(`/B/${BOOK}/pending-journals?status=${encodeURIComponent(currentFilter)}&offset=${offset}&limit=${PAGE}`);
+      total = r.total != null ? Number(r.total) : r.count;
+      if (!r.pending_journals || r.pending_journals.length === 0) {
+        const emptyMsg = currentFilter === 'pending' ? '✓ 沒有待審項目' : '沒有資料';
+        $('list').innerHTML = `<div class="text-center text-success py-4">${emptyMsg}</div>`;
+      } else {
+        $('list').innerHTML = r.pending_journals.map(cardHtml).join('');
+      }
+    } catch (e) {
+      if (e.handled) return;
+      $('list').innerHTML = '<div class="alert alert-danger my-3">' + esc(e.message) + '</div>';
+      total = 0;
+    }
+    updateBatchBar();
+    updatePager();
+  }
+
+  function markApproved(card, note) {
+    if (!card) return;
+    const st = card.querySelector('.pj-status');
+    if (st) { st.className = 'badge pj-status bg-success'; st.textContent = '已核准'; }
+    const acts = card.querySelector('.pj-actions');
+    if (acts) acts.remove();
+    const chk = card.querySelector('[data-pj-check]');
+    if (chk) chk.remove();
+    selected.delete(Number(card.dataset.id));
+  }
+  function markRejected(card) {
+    if (!card) return;
+    const st = card.querySelector('.pj-status');
+    if (st) { st.className = 'badge pj-status bg-secondary'; st.textContent = '已退回'; }
+    const acts = card.querySelector('.pj-actions');
+    if (acts) acts.remove();
+    const chk = card.querySelector('[data-pj-check]');
+    if (chk) chk.remove();
+    selected.delete(Number(card.dataset.id));
+  }
+  function setCardBusy(card, busy) {
+    card.querySelectorAll('[data-act]').forEach(b => { b.disabled = busy; });
+  }
+
+  async function approveOne(id) {
+    const card = $('pj-' + id);
+    const note = await askText({ title: '核准這筆入帳', text: '核准後會正式寫進帳本。', label: '備註(可以不填)', okText: '核准' });
+    if (note === null) return;
+    setCardBusy(card, true);
+    inlineResult(card, true, '');
+    try {
+      await api(`/B/${BOOK}/pending-journals/${id}/approve`, { method: 'POST', body: { review_note: note || null } });
+      markApproved(card);
+      inlineResult(card, true, '✓ 已核准,這筆已經寫進帳本');
+      CC.refreshBadge();
+    } catch (e) {
+      if (e.handled) return;
+      setCardBusy(card, false);
+      inlineResult(card, false, '核准失敗:' + e.message);
+    }
+    updateBatchBar();
+  }
+
+  async function rejectOne(id) {
+    const card = $('pj-' + id);
+    const note = await askText({ title: '退回這筆入帳', text: '退回後不會進帳本。', label: '退回原因(建議寫一下,方便查)', okText: '退回', danger: true });
+    if (note === null) return;
+    setCardBusy(card, true);
+    inlineResult(card, true, '');
+    try {
+      await api(`/B/${BOOK}/pending-journals/${id}/reject`, { method: 'POST', body: { review_note: note || null } });
+      markRejected(card);
+      inlineResult(card, true, '✓ 已退回');
+      CC.refreshBadge();
+    } catch (e) {
+      if (e.handled) return;
+      setCardBusy(card, false);
+      inlineResult(card, false, '退回失敗:' + e.message);
+    }
+    updateBatchBar();
+  }
+
+  async function approveBatch() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const go = await ask({ title: `一次核准 ${ids.length} 筆?`, text: '勾選的每一筆都會正式寫進帳本。每一筆的結果會顯示在它自己的卡片上。', okText: `核准 ${ids.length} 筆` });
+    if (!go) return;
+    const btn = $('batchBtn');
+    btn.disabled = true; btn.textContent = '核准中...';
+    inlineResult($('batchBar'), true, '');
+    try {
+      const r = await api(`/B/${BOOK}/pending-journals/approve-batch`, { method: 'POST', body: { ids } });
+      let okN = 0, badN = 0;
+      (r.results || []).forEach(x => {
+        const card = $('pj-' + x.id);
+        if (x.ok) { okN++; markApproved(card); inlineResult(card, true, '✓ 已核准,這筆已經寫進帳本'); }
+        else { badN++; inlineResult(card, false, '核准失敗:' + (x.error || '原因不明')); }
+      });
+      inlineResult($('batchBar'), badN === 0, `成功 ${okN} 筆` + (badN ? `、失敗 ${badN} 筆(失敗的原因寫在各張卡片上)` : ''));
+      CC.refreshBadge();
+    } catch (e) {
+      if (e.handled) return;
+      inlineResult($('batchBar'), false, '批次核准沒有成功:' + e.message);
+    }
+    updateBatchBar();
+  }
+
+  // 事件委派(不再把字串塞進 onclick)
+  $('list').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-act]');
+    if (!b || b.disabled) return;
+    const id = Number(b.dataset.id);
+    if (b.dataset.act === 'approve') approveOne(id);
+    else if (b.dataset.act === 'reject') rejectOne(id);
   });
-});
+  $('list').addEventListener('change', (ev) => {
+    const c = ev.target.closest('[data-pj-check]');
+    if (!c) return;
+    const id = Number(c.dataset.pjCheck);
+    if (c.checked) selected.add(id); else selected.delete(id);
+    updateBatchBar();
+  });
+  $('checkAll').addEventListener('change', () => {
+    const on = $('checkAll').checked;
+    document.querySelectorAll('[data-pj-check]').forEach(c => {
+      c.checked = on;
+      const id = Number(c.dataset.pjCheck);
+      if (on) selected.add(id); else selected.delete(id);
+    });
+    updateBatchBar();
+  });
+  $('batchBtn').addEventListener('click', approveBatch);
+  $('refreshBtn').addEventListener('click', load);
+  $('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - PAGE); load(); });
+  $('nextBtn').addEventListener('click', () => { offset += PAGE; load(); });
 
-load();
+  document.querySelectorAll('#filterBtns [data-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentFilter = btn.dataset.filter;
+      offset = 0;
+      document.querySelectorAll('#filterBtns [data-filter]').forEach(b => {
+        b.classList.remove('btn-primary');
+        b.classList.add('btn-outline-secondary');
+      });
+      btn.classList.add('btn-primary');
+      btn.classList.remove('btn-outline-secondary');
+      load();
+    });
+  });
+
+  // 平板放在背景很久再切回來:沒有正在看的結果訊息、也沒勾選時才自動重抓
+  CC.onResume(() => {
+    if (selected.size === 0 && !document.querySelector('#list .cc-result')) load();
+  });
+
+  CC.loadRole().then((role) => { myRole = role; load(); });
+}
 </script>
 </body>
 </html>

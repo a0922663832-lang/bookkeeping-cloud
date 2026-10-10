@@ -22,7 +22,7 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
 table.journals-table{width:100%;font-size:13px}
 table.journals-table th{background:#faf8f5;font-weight:600;font-size:12px;color:#666;padding:9px 10px;border-bottom:2px solid #e8e2d5}
 table.journals-table td{padding:11px 10px;border-bottom:1px solid #f0ece4;vertical-align:top}
-table.journals-table tr:hover{background:#faf8f5;cursor:pointer}
+table.journals-table tr[data-id]:hover{background:#faf8f5;cursor:pointer}
 table.journals-table tr.reversed{opacity:.5;text-decoration:line-through}
 table.journals-table tr.is-reverse{background:#fff5f5}
 .type-chip{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:500}
@@ -30,11 +30,13 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 .type-chip.income{background:#e8f5ed;color:#2a7a4a}
 .type-chip.transfer{background:#eaf0fa;color:#1a4a8a}
 .type-chip.reclassify{background:#f3eafa;color:#6a3a8a}
+.type-chip.composite{background:#e8f1e0;color:#3a6a1a}
 .amount-cell{text-align:right;font-weight:700;font-family:'SF Mono','Consolas',monospace;font-size:14px}
 .amount-cell.expense{color:#c4453a}
 .amount-cell.income{color:#1a6a5a}
 .amount-cell.transfer{color:#1a4a8a}
 .amount-cell.reclassify{color:#6a3a8a}
+.amount-cell.composite{color:#3a6a1a}
 .target-row{font-size:11px;color:#888;margin-top:2px;padding-left:6px;border-left:2px solid #ddd}
 .account-flow{font-size:11px;color:#666}
 .account-flow .arr{color:#aaa;margin:0 4px}
@@ -49,6 +51,8 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 .empty-state{padding:60px 20px;text-align:center;color:#888}
 .detail-meta{font-size:12px;color:#666;line-height:1.8}
 .detail-meta strong{color:#1a1814;margin-right:8px}
+.legs-box{background:#faf9f5;border-radius:8px;padding:8px 12px;font-size:12px}
+.legs-box td{padding:2px 10px 2px 0}
 .reorder-btn{background:transparent;border:0;color:#888;padding:0 4px;font-size:14px;line-height:1;cursor:pointer;vertical-align:middle}
 .reorder-btn:hover{color:#6a3a8a}
 .reorder-list{list-style:none;padding:0;margin:0;max-height:50vh;overflow-y:auto}
@@ -64,31 +68,15 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg shadow-sm">
-  <div class="container">
-    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
-    <div class="navbar-nav me-auto">
-      <a class="nav-link" href="/dashboard">儀表板</a>
-      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
-      <a class="nav-link" href="/journals?new=1">記一筆</a>
-      <a class="nav-link active" href="/journals">明細</a>
-      <a class="nav-link" href="/reports">報表</a>
-      <a class="nav-link" href="/setup">主檔</a>
-      <a class="nav-link" href="/settings">設定</a>
-    </div>
-    <div class="navbar-nav">
-      <span class="navbar-text me-3" id="userName"></span>
-      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
-    </div>
-  </div>
-</nav>
+<div id="navMount"></div>
 
 <div class="container py-4">
   <div class="section-card">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h5 class="mb-0">記帳明細</h5>
-      <button class="btn btn-primary btn-sm" onclick="openNew()">+ 記一筆</button>
+      <button class="btn btn-primary btn-sm" id="newBtn">+ 記一筆</button>
     </div>
+    <div id="opMsg"></div>
 
     <div class="filter-bar">
       <div class="form-group"><label>日期 從</label><input type="date" class="form-control form-control-sm" id="fFrom"></div>
@@ -100,6 +88,7 @@ table.journals-table tr.is-reverse{background:#fff5f5}
           <option value="income">收入</option>
           <option value="transfer">轉帳</option>
           <option value="reclassify">重分類</option>
+          <option value="composite">複式</option>
         </select>
       </div>
       <div class="form-group"><label>科目</label>
@@ -164,7 +153,7 @@ table.journals-table tr.is-reverse{background:#fff5f5}
           </div>
         </div>
 
-        <!-- expense / income / transfer 共用區 -->
+        <!-- 支出 / 收入 / 轉帳 共用區 -->
         <div id="jmStandardBody" class="row g-3 mt-1">
           <div class="col-md-6" id="jmSubjectWrap">
             <label class="form-label small d-flex align-items-center justify-content-between">
@@ -193,12 +182,12 @@ table.journals-table tr.is-reverse{background:#fff5f5}
           </div>
         </div>
 
-        <!-- reclassify 1:N 區 -->
+        <!-- 重分類:一個原科目分到好幾個科目 -->
         <div id="jmReclassifyBody" class="d-none mt-1">
           <div class="row g-3">
             <div class="col-md-6">
               <label class="form-label small d-flex align-items-center justify-content-between">
-                <span>原科目（要分出去的）*</span>
+                <span>原科目(要分出去的)*</span>
                 <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderSubjects(null)">≡</button>
               </label>
               <select class="form-select" id="jmRcFrom"></select>
@@ -210,18 +199,18 @@ table.journals-table tr.is-reverse{background:#fff5f5}
           </div>
           <div class="mt-3">
             <label class="form-label small d-flex justify-content-between align-items-center">
-              <span>分到以下科目 *（至少 1 筆）</span>
+              <span>分到以下科目 *(至少 1 筆)</span>
               <button class="btn btn-outline-primary btn-icon" onclick="addTargetRow()">+ 加一筆</button>
             </label>
             <div id="jmTargets"></div>
-            <div class="form-text">同一筆訂金可同時抵「菜色 4101 / 服務費 4109 / 銷售折讓 4191」三個科目，每個科目自己一份金額</div>
+            <div class="form-text">例如同一筆訂金可以同時抵菜色、服務費、折讓三個科目,每個科目填自己那一份金額</div>
           </div>
         </div>
 
         <div class="row g-3 mt-1">
           <div class="col-md-6">
             <label class="form-label small d-flex align-items-center justify-content-between">
-              <span>對象 (counterparty)</span>
+              <span>對象(廠商 / 客戶)</span>
               <button type="button" class="reorder-btn" title="長按 ≡ 拖曳排序" onclick="openReorderCounterparties()">≡</button>
             </label>
             <select class="form-select" id="jmCounterparty"><option value="">— 不指定 —</option></select>
@@ -236,7 +225,7 @@ table.journals-table tr.is-reverse{background:#fff5f5}
       </div>
       <div class="modal-footer justify-content-between">
         <div>
-          <button type="button" class="btn btn-outline-danger btn-sm d-none" id="jmReverseBtn" onclick="confirmReverse()">↺ 反向沖銷</button>
+          <button type="button" class="btn btn-outline-danger btn-sm d-none" id="jmReverseBtn" onclick="reverseFromEdit()">↺ 沖銷這筆</button>
         </div>
         <div>
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
@@ -258,14 +247,14 @@ table.journals-table tr.is-reverse{background:#fff5f5}
       <div class="modal-body" id="dtBody"></div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-primary" id="dtEditBtn">編輯</button>
-        <button type="button" class="btn btn-outline-danger" id="dtReverseBtn">↺ 反向</button>
+        <button type="button" class="btn btn-outline-danger" id="dtReverseBtn">↺ 沖銷</button>
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ────── 帳戶排序 Modal ────── -->
+<!-- ────── 排序 Modal ────── -->
 <div class="modal fade" id="reorderModal" tabindex="-1">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -274,7 +263,7 @@ table.journals-table tr.is-reverse{background:#fff5f5}
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div class="reorder-hint">長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。</div>
+        <div class="reorder-hint">長按左邊 <strong>≡</strong> 然後拖曳,調整下拉選單顯示順序。</div>
         <div id="reorderList"></div>
         <div id="reorderError" class="alert alert-danger small d-none mt-2"></div>
       </div>
@@ -288,643 +277,701 @@ table.journals-table tr.is-reverse{background:#fff5f5}
 
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/common.js"></script>
 <script>
-const BOOK = 'NEST0001';
-const token = localStorage.getItem('token');
-if (!token) location.href = '/';
-const user = JSON.parse(localStorage.getItem('user') || '{}');
-document.getElementById('userName').textContent = user.name || '';
-document.getElementById('logoutBtn').addEventListener('click', (e) => {
-  e.preventDefault(); localStorage.clear(); location.href = '/';
-});
+if (CC.initPage('journals')) {
+  let myRole = null;
+  let lastResult = null;     // 剛做完的動作結果,重畫清單後還要接回那一列旁邊
 
-const $ = (id) => document.getElementById(id);
+  function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類', composite: '複式' })[t] || '其他'; }
+  const CP_TYPE_NAME = { income: '客戶', expense: '廠商', both: '雙向' };
+  function subjLabel(pt) { return CC.SUBJ_TYPE_NAME[pt] || '其他'; }
 
-async function api(path, opts = {}) {
-  const headers = { Authorization: 'Bearer ' + token, ...(opts.headers || {}) };
-  if (opts.body && typeof opts.body === 'object') {
-    headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(opts.body);
+  // ── lookups 載入 + 快取 ────────────────────────────────────────
+  const cache = { subjects: [], accounts: [], counterparties: [] };
+  async function loadLookups() {
+    const [subj, acc, cp] = await Promise.all([
+      api(`/B/${BOOK}/subjects`),
+      api(`/B/${BOOK}/accounts`),
+      api(`/B/${BOOK}/counterparties`),
+    ]);
+    cache.subjects = subj.subjects || [];
+    cache.accounts = acc.accounts || [];
+    cache.counterparties = cp.counterparties || [];
+    fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
+    fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
+    fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
+    fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
   }
-  const r = await fetch(path, { ...opts, headers });
-  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-  return data;
-}
-
-function fmt(v) { return new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(parseFloat(v || 0)); }
-function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類' })[t] || t; }
-function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
-
-// ── lookups 載入 + 快取 ────────────────────────────────────────
-const cache = { subjects: [], accounts: [], counterparties: [] };
-async function loadLookups() {
-  const [subj, acc, cp] = await Promise.all([
-    api(`/B/${BOOK}/subjects`),
-    api(`/B/${BOOK}/accounts`),
-    api(`/B/${BOOK}/counterparties`),
-  ]);
-  cache.subjects = subj.subjects || [];
-  cache.accounts = acc.accounts || [];
-  cache.counterparties = cp.counterparties || [];
-  // populate filter selects
-  fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
-  fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
-  fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
-  fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
-}
-function fillSelect(el, items, blankLabel) {
-  el.innerHTML = `<option value="">${blankLabel}</option>` + items.map((it) => `<option value="${it.value}">${esc(it.label)}</option>`).join('');
-}
-function subjectOptionsByType(parentTypeFilter) {
-  return cache.subjects
-    .filter((s) => !parentTypeFilter || parentTypeFilter.includes(s.parent_type))
-    .map((s) => `<option value="${s.id}" data-parent="${s.parent_type}">${esc(s.code || '')} ${esc(s.name)} (${s.parent_type})</option>`)
-    .join('');
-}
-function accountOptions() {
-  return cache.accounts.map((a) => `<option value="${a.id}">${esc(a.name)} (${a.type})</option>`).join('');
-}
-
-// ── list 載入 + render ─────────────────────────────────────────
-async function reload() {
-  $('loading').classList.remove('d-none');
-  $('content').classList.add('d-none');
-  const params = new URLSearchParams();
-  ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => {
-    const v = $(id).value;
-    if (v) params.set(({ fFrom: 'from', fTo: 'to', fType: 'type', fSubject: 'subject_id', fCounterparty: 'counterparty_id', fAccount: 'account_id' }[id]), v);
-  });
-  params.set('limit', '200');
-  try {
-    const r = await api(`/B/${BOOK}/journals?${params}`);
-    renderRows(r.journals || []);
-    $('rowCount').textContent = `共 ${r.count} 筆`;
-  } catch (e) {
-    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">載入失敗: ${esc(e.message)}</td></tr>`;
+  function fillSelect(el, items, blankLabel) {
+    const prev = el.value;
+    el.innerHTML = `<option value="">${esc(blankLabel)}</option>` + items.map((it) => `<option value="${esc(it.value)}">${esc(it.label)}</option>`).join('');
+    if (prev && [...el.options].some((o) => o.value === prev)) el.value = prev;
   }
-  $('loading').classList.add('d-none');
-  $('content').classList.remove('d-none');
-}
-
-function renderRows(journals) {
-  if (!journals.length) {
-    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state">沒有符合條件的紀錄</td></tr>`;
-    return;
+  function subjectOptionsByType(parentTypeFilter) {
+    return cache.subjects
+      .filter((s) => !parentTypeFilter || parentTypeFilter.includes(s.parent_type))
+      .map((s) => `<option value="${esc(s.id)}" data-parent="${esc(s.parent_type)}">${esc(s.code || '')} ${esc(s.name)}(${esc(subjLabel(s.parent_type))})</option>`)
+      .join('');
   }
-  $('rows').innerHTML = journals.map((j) => {
-    const isReversed = !!j.reversed_by_id;
-    const isReverse = !!j.reverses_id;
-    const cls = (isReversed ? ' reversed' : '') + (isReverse ? ' is-reverse' : '');
-    const editedBadge = j.edit_count > 0 ? '<span class="edited-badge">已編輯 ' + j.edit_count + ' 次</span>' : '';
-    const reverseLabel = isReverse ? '<span class="badge bg-secondary me-1">反向</span>' : '';
-    const reversedLabel = isReversed ? '<span class="badge bg-secondary me-1">已沖銷</span>' : '';
-
-    let subjectCell;
-    if (j.type === 'reclassify') {
-      if (j.targets && j.targets.length > 0) {
-        subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${j.targets.length} 個科目`;
-        subjectCell += j.targets.map((t) => `<div class="target-row">${esc(t.target_subject_code || '')} ${esc(t.target_subject_name)} <strong>$${fmt(t.amount)}</strong></div>`).join('');
-      } else {
-        subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${esc(j.subject_code || '')} ${esc(j.subject_name || '')}`;
-      }
-    } else {
-      subjectCell = `<strong>${esc(j.subject_code || '')} ${esc(j.subject_name || '')}</strong>`;
-      const flow = [];
-      if (j.transfer_out_account_name) flow.push(esc(j.transfer_out_account_name));
-      if (j.transfer_in_account_name) flow.push(esc(j.transfer_in_account_name));
-      if (flow.length) subjectCell += `<div class="account-flow">${flow.join(' <span class="arr">→</span> ')}</div>`;
-    }
-
-    return `<tr class="${cls}" onclick="openDetail(${j.id})">
-      <td>${j.date}</td>
-      <td>${reverseLabel}${reversedLabel}<span class="type-chip ${j.type}">${typeName(j.type)}</span></td>
-      <td>${subjectCell}</td>
-      <td>${esc(j.summary || '')}${editedBadge}</td>
-      <td>${esc(j.counterparty_name || '')}</td>
-      <td class="amount-cell ${j.type}">$${fmt(j.amount)}</td>
-      <td onclick="event.stopPropagation()">
-        ${!isReversed && !isReverse ? `<button class="btn btn-outline-primary btn-icon" onclick="openEdit(${j.id})">✏️</button> ` : ''}
-        ${!isReversed && !isReverse ? `<button class="btn btn-outline-danger btn-icon" onclick="quickReverse(${j.id})">↺</button>` : ''}
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-function clearFilters() {
-  ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => { $(id).value = ''; });
-  reload();
-}
-
-// ── new / edit modal ───────────────────────────────────────────
-const journalModal = new bootstrap.Modal($('journalModal'));
-
-function openNew() {
-  $('jmEditId').value = '';
-  $('jmTitle').textContent = '記一筆';
-  $('jmReverseBtn').classList.add('d-none');
-  $('jmEditedBanner').classList.add('d-none');
-  $('jmTabBar').style.pointerEvents = '';
-  $('jmTabBar').style.opacity = '';
-  $('jmDate').value = new Date().toISOString().slice(0, 10);
-  $('jmSummary').value = '';
-  $('jmAmount').value = '';
-  $('jmNote').value = '';
-  $('jmCounterparty').value = '';
-  $('jmTargets').innerHTML = '';
-  $('jmRcTotal').value = '0';
-  $('jmError').classList.add('d-none');
-  switchType('expense');
-  journalModal.show();
-}
-
-function switchType(t) {
-  $('jmType').value = t;
-  document.querySelectorAll('.modal-tab-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.type === t);
-  });
-  if (t === 'reclassify') {
-    $('jmStandardBody').classList.add('d-none');
-    $('jmReclassifyBody').classList.remove('d-none');
-    // populate rc-from select with all subjects
-    $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
-    if ($('jmTargets').children.length === 0) addTargetRow();
-  } else {
-    $('jmStandardBody').classList.remove('d-none');
-    $('jmReclassifyBody').classList.add('d-none');
-    // expense → t2/t3, income → t1/t5, transfer → t4
-    const filter = t === 'expense' ? ['t2', 't3'] : t === 'income' ? ['t1', 't5'] : ['t4'];
-    $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
-    $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
-    $('jmIn').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
-    if (t === 'expense') {
-      $('jmOutLbl').textContent = '付款帳戶 *';
-      $('jmOutWrap').classList.remove('d-none');
-      $('jmInWrap').classList.add('d-none');
-    } else if (t === 'income') {
-      $('jmOutWrap').classList.add('d-none');
-      $('jmInLbl').textContent = '收款帳戶 *';
-      $('jmInWrap').classList.remove('d-none');
-    } else { // transfer
-      $('jmOutLbl').textContent = '從（轉出）*';
-      $('jmInLbl').textContent = '到（轉入）*';
-      $('jmOutWrap').classList.remove('d-none');
-      $('jmInWrap').classList.remove('d-none');
-    }
+  function accountOptions() {
+    return cache.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}(${esc(CC.ACCT_TYPE_NAME[a.type] || '其他')})</option>`).join('');
   }
-}
 
-function addTargetRow(presetSubjectId, presetAmount) {
-  const row = document.createElement('div');
-  row.className = 'target-input-row';
-  row.innerHTML = `
-    <select class="form-select form-select-sm jm-tg-subject">
-      <option value="">— 選科目 —</option>${subjectOptionsByType(null)}
-    </select>
-    <input type="number" min="0.01" step="0.01" class="form-control form-control-sm jm-tg-amount" placeholder="金額" oninput="recalcRcTotal()">
-    <button class="btn btn-outline-danger btn-icon" onclick="this.closest('.target-input-row').remove();recalcRcTotal()">✕</button>
-  `;
-  $('jmTargets').appendChild(row);
-  if (presetSubjectId) row.querySelector('.jm-tg-subject').value = presetSubjectId;
-  if (presetAmount) { row.querySelector('.jm-tg-amount').value = presetAmount; recalcRcTotal(); }
-}
-
-function recalcRcTotal() {
-  let sum = 0;
-  document.querySelectorAll('.jm-tg-amount').forEach((el) => { sum += parseFloat(el.value) || 0; });
-  $('jmRcTotal').value = sum.toFixed(2);
-}
-
-function collectFormPayload() {
-  const t = $('jmType').value;
-  const base = {
-    date: $('jmDate').value,
-    type: t,
-    summary: $('jmSummary').value.trim() || null,
-    note: $('jmNote').value.trim() || null,
-    counterparty_id: $('jmCounterparty').value ? Number($('jmCounterparty').value) : null,
-  };
-  if (t === 'reclassify') {
-    const from = $('jmRcFrom').value;
-    if (!from) throw new Error('請選原科目');
-    const targets = [];
-    document.querySelectorAll('#jmTargets .target-input-row').forEach((row) => {
-      const sid = row.querySelector('.jm-tg-subject').value;
-      const amt = parseFloat(row.querySelector('.jm-tg-amount').value);
-      if (sid && amt > 0) targets.push({ subject_id: Number(sid), amount: amt });
+  // ── list 載入 + render ─────────────────────────────────────────
+  async function reload() {
+    $('loading').classList.remove('d-none');
+    $('content').classList.add('d-none');
+    const params = new URLSearchParams();
+    ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => {
+      const v = $(id).value;
+      if (v) params.set(({ fFrom: 'from', fTo: 'to', fType: 'type', fSubject: 'subject_id', fCounterparty: 'counterparty_id', fAccount: 'account_id' }[id]), v);
     });
-    if (targets.length === 0) throw new Error('至少需要 1 個 target 科目');
-    return { ...base, reclassify_from_subject_id: Number(from), targets };
-  }
-  const subjectId = $('jmSubject').value;
-  const amount = parseFloat($('jmAmount').value);
-  if (!subjectId) throw new Error('請選會計科目');
-  if (!(amount > 0)) throw new Error('金額必須大於 0');
-  const payload = { ...base, subject_id: Number(subjectId), amount };
-  if (t === 'expense') payload.transfer_out_account_id = Number($('jmOut').value);
-  else if (t === 'income') payload.transfer_in_account_id = Number($('jmIn').value);
-  else if (t === 'transfer') {
-    payload.transfer_out_account_id = Number($('jmOut').value);
-    payload.transfer_in_account_id = Number($('jmIn').value);
-  }
-  if (t === 'expense' && !payload.transfer_out_account_id) throw new Error('請選付款帳戶');
-  if (t === 'income' && !payload.transfer_in_account_id) throw new Error('請選收款帳戶');
-  if (t === 'transfer' && (!payload.transfer_out_account_id || !payload.transfer_in_account_id)) throw new Error('請選轉出 + 轉入帳戶');
-  if (t === 'transfer' && payload.transfer_out_account_id === payload.transfer_in_account_id) throw new Error('轉出/轉入帳戶不能相同');
-  return payload;
-}
-
-async function saveJournal() {
-  $('jmError').classList.add('d-none');
-  let payload;
-  try {
-    payload = collectFormPayload();
-  } catch (e) {
-    $('jmError').textContent = e.message;
-    $('jmError').classList.remove('d-none');
-    return;
-  }
-  const editId = $('jmEditId').value;
-  const btn = $('jmSaveBtn');
-  btn.disabled = true; btn.textContent = '儲存中...';
-  try {
-    if (editId) {
-      await api(`/B/${BOOK}/journals/${editId}`, { method: 'PATCH', body: payload });
-    } else {
-      await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
+    params.set('limit', '200');
+    try {
+      const r = await api(`/B/${BOOK}/journals?${params}`);
+      const list = r.journals || [];
+      renderRows(list);
+      const total = r.total != null ? Number(r.total) : null;
+      if (total != null && total > list.length) $('rowCount').textContent = `顯示最近 ${list.length} 筆(符合條件的共 ${total} 筆),更早的請用上面的日期篩選縮小範圍`;
+      else if (list.length >= 200) $('rowCount').textContent = '顯示最近 200 筆,更早的請用上面的日期篩選縮小範圍';
+      else $('rowCount').textContent = `共 ${list.length} 筆`;
+    } catch (e) {
+      if (e.handled) return;
+      $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">載入失敗:${esc(e.message)}</td></tr>`;
     }
-    journalModal.hide();
-    reload();
-  } catch (e) {
-    $('jmError').textContent = e.message;
-    $('jmError').classList.remove('d-none');
-  } finally {
-    btn.disabled = false; btn.textContent = '儲存';
+    $('loading').classList.add('d-none');
+    $('content').classList.remove('d-none');
   }
-}
 
-async function openEdit(id) {
-  try {
-    const r = await api(`/B/${BOOK}/journals/${id}`);
-    const j = r.journal;
-    if (j.reversed_by_id) { alert('此單已被反向沖銷，無法編輯'); return; }
-    if (j.reverses_id) { alert('反向沖銷單不能編輯'); return; }
-    $('jmEditId').value = id;
-    $('jmTitle').textContent = `編輯 #${id}`;
-    $('jmReverseBtn').classList.remove('d-none');
-    $('jmTabBar').style.pointerEvents = 'none';
-    $('jmTabBar').style.opacity = '.5';
-    if (j.edit_count > 0) {
-      $('jmEditedBanner').textContent = `此單已被編輯過 ${j.edit_count} 次（最後 ${j.edited_at}）`;
-      $('jmEditedBanner').classList.remove('d-none');
-    } else {
-      $('jmEditedBanner').classList.add('d-none');
+  function rowEl(id) { return document.querySelector(`#rows tr[data-id="${id}"]`); }
+
+  function renderRows(journals) {
+    if (!journals.length) {
+      $('rows').innerHTML = `<tr><td colspan="7" class="empty-state">沒有符合條件的紀錄</td></tr>`;
+      return;
     }
-    switchType(j.type);
-    $('jmDate').value = j.date.slice(0, 10);
-    $('jmSummary').value = j.summary || '';
-    $('jmNote').value = j.note || '';
-    $('jmCounterparty').value = j.counterparty_id || '';
-    if (j.type === 'reclassify') {
-      $('jmRcFrom').value = j.reclassify_from_subject_id || '';
-      $('jmTargets').innerHTML = '';
-      if (j.targets && j.targets.length > 0) {
-        for (const t of j.targets) addTargetRow(t.target_subject_id, t.amount);
+    const mayWrite = CC.can(myRole, 'write');
+    const mayAdmin = CC.can(myRole, 'admin');
+    $('rows').innerHTML = journals.map((j) => {
+      const isReversed = !!j.reversed_by_id;
+      const isReverse = !!j.reverses_id;
+      const isComposite = j.type === 'composite' || j.is_composite === true;
+      const typeKey = isComposite ? 'composite' : j.type;
+      const cls = (isReversed ? ' reversed' : '') + (isReverse ? ' is-reverse' : '');
+      const editedBadge = j.edit_count > 0 ? `<span class="edited-badge">已編輯 ${esc(j.edit_count)} 次</span>` : '';
+      const reverseLabel = isReverse ? '<span class="badge bg-secondary me-1">沖銷單</span>' : '';
+      const reversedLabel = isReversed ? '<span class="badge bg-secondary me-1">已沖銷</span>' : '';
+
+      let subjectCell;
+      if (isComposite) {
+        subjectCell = `<strong>複式記帳</strong> <button type="button" class="btn btn-link btn-sm p-0 align-baseline" data-act="legs" data-id="${esc(j.id)}">展開各腳</button>`;
+      } else if (j.type === 'reclassify') {
+        if (j.targets && j.targets.length > 0) {
+          subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${esc(j.targets.length)} 個科目`;
+          subjectCell += j.targets.map((t) => `<div class="target-row">${esc(t.target_subject_code || '')} ${esc(t.target_subject_name)} <strong>${esc(fmtMoney(t.amount))}</strong></div>`).join('');
+        } else {
+          subjectCell = `<strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</strong> → ${esc(j.subject_code || '')} ${esc(j.subject_name || '')}`;
+        }
       } else {
-        addTargetRow(j.subject_id, j.amount);
+        subjectCell = `<strong>${esc(j.subject_code || '')} ${esc(j.subject_name || '')}</strong>`;
+        const flow = [];
+        if (j.transfer_out_account_name) flow.push(esc(j.transfer_out_account_name));
+        if (j.transfer_in_account_name) flow.push(esc(j.transfer_in_account_name));
+        if (flow.length) subjectCell += `<div class="account-flow">${flow.join(' <span class="arr">→</span> ')}</div>`;
       }
-      recalcRcTotal();
-    } else {
-      $('jmSubject').value = j.subject_id || '';
-      $('jmAmount').value = j.amount;
-      if (j.transfer_out_account_id) $('jmOut').value = j.transfer_out_account_id;
-      if (j.transfer_in_account_id) $('jmIn').value = j.transfer_in_account_id;
+
+      // 複式單不給編輯(各腳牽動好幾個帳戶);沖銷只有帳本擁有者 / 管理員能做
+      const canEditRow = !isReversed && !isReverse && !isComposite && mayWrite;
+      const canReverseRow = !isReversed && !isReverse && mayAdmin;
+      return `<tr class="${cls}" data-id="${esc(j.id)}">
+        <td>${esc(fmtDate(j.date))}</td>
+        <td>${reverseLabel}${reversedLabel}<span class="type-chip ${esc(typeKey)}">${esc(typeName(typeKey))}</span></td>
+        <td>${subjectCell}</td>
+        <td>${esc(j.summary || '')}${editedBadge}</td>
+        <td>${esc(j.counterparty_name || '')}</td>
+        <td class="amount-cell ${esc(typeKey)}">${esc(fmtMoney(j.amount))}</td>
+        <td>
+          ${canEditRow ? `<button class="btn btn-outline-primary btn-icon" data-act="edit" data-id="${esc(j.id)}" title="編輯">✏️</button> ` : ''}
+          ${canReverseRow ? `<button class="btn btn-outline-danger btn-icon" data-act="reverse" data-id="${esc(j.id)}" title="沖銷這筆">↺</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    // 剛做完的動作結果,接回那一列旁邊
+    if (lastResult) {
+      const tr = rowEl(lastResult.id);
+      if (tr) inlineResult(tr, lastResult.ok, lastResult.msg);
+      else inlineResult($('opMsg'), lastResult.ok, lastResult.msg);
+      lastResult = null;
     }
+  }
+
+  // 清單上的按鈕與整列點擊(事件委派)
+  $('rows').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-act]');
+    if (b) {
+      ev.stopPropagation();
+      const id = Number(b.dataset.id);
+      if (b.dataset.act === 'edit') openEdit(id);
+      else if (b.dataset.act === 'reverse') doReverse(id, rowEl(id)).then((ok) => { if (ok) reload(); });
+      else if (b.dataset.act === 'legs') toggleLegs(id, b);
+      return;
+    }
+    if (ev.target.closest('.cc-result-row') || ev.target.closest('.legs-row')) return;
+    const tr = ev.target.closest('tr[data-id]');
+    if (tr) openDetail(Number(tr.dataset.id));
+  });
+
+  // 複式單展開各腳
+  function legsTableHtml(legs) {
+    if (!legs || !legs.length) return '<div class="text-muted">沒有明細</div>';
+    return '<table class="w-100">' + legs.map((l) => {
+      const who = l.kind === 'subject'
+        ? `📊 ${esc(l.subject_code || '')} ${esc(l.subject_name || '')}`
+        : `🏦 ${esc(l.account_name || '')}`;
+      const n = Number(l.amount) || 0;
+      return `<tr><td>${who}</td><td class="text-end" style="color:${n < 0 ? '#bf4a18' : '#1a6a5a'}">${esc(fmtSigned(n))}</td><td class="text-muted">${esc(l.note || '')}</td></tr>`;
+    }).join('') + '</table>';
+  }
+  async function toggleLegs(id, btn) {
+    const tr = rowEl(id);
+    if (!tr) return;
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('legs-row')) { next.remove(); btn.textContent = '展開各腳'; return; }
+    btn.disabled = true;
+    try {
+      const r = await api(`/B/${BOOK}/journals/${id}/legs`);
+      const row = document.createElement('tr');
+      row.className = 'legs-row';
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.innerHTML = `<div class="legs-box">${legsTableHtml(r.legs)}</div>`;
+      row.appendChild(td);
+      tr.parentNode.insertBefore(row, tr.nextSibling);
+      btn.textContent = '收起';
+    } catch (e) {
+      if (e.handled) return;
+      inlineResult(tr, false, '讀取各腳失敗:' + e.message);
+    } finally { btn.disabled = false; }
+  }
+
+  function clearFilters() {
+    ['fFrom', 'fTo', 'fType', 'fSubject', 'fCounterparty', 'fAccount'].forEach((id) => { $(id).value = ''; });
+    reload();
+  }
+
+  // ── 沖銷(一律走沖銷專用入口,要寫原因) ─────────────────────────
+  async function doReverse(id, ctxEl) {
+    const reason = await askText({
+      title: `沖銷第 ${id} 筆?`,
+      text: '沖銷會新增一筆方向相反的紀錄把它抵銷掉,原本這筆會保留起來,方便查帳。',
+      label: '沖銷原因(必填)', required: true, requiredText: '請寫一下為什麼要沖銷', okText: '沖銷', danger: true,
+    });
+    if (reason === null) return false;
+    try {
+      await api(`/B/${BOOK}/journals/${id}/reverse`, { method: 'POST', body: { reason } });
+      lastResult = { id, ok: true, msg: `✓ 已沖銷第 ${id} 筆(原因:${reason})` };
+      return true;
+    } catch (e) {
+      if (e.handled) return false;
+      if (ctxEl) inlineResult(ctxEl, false, '沖銷失敗:' + e.message);
+      else inlineResult($('opMsg'), false, '沖銷失敗:' + e.message);
+      return false;
+    }
+  }
+
+  async function reverseFromEdit() {
+    const id = Number($('jmEditId').value);
+    if (!id) return;
+    const ok = await doReverse(id, $('jmError').parentNode);
+    if (ok) { journalModal.hide(); reload(); }
+  }
+
+  // ── 新增 / 編輯 modal ──────────────────────────────────────────
+  const journalModal = new bootstrap.Modal($('journalModal'));
+
+  function openNew() {
+    $('jmEditId').value = '';
+    $('jmTitle').textContent = '記一筆';
+    $('jmReverseBtn').classList.add('d-none');
+    $('jmEditedBanner').classList.add('d-none');
+    $('jmTabBar').style.pointerEvents = '';
+    $('jmTabBar').style.opacity = '';
+    $('jmDate').value = todayLocal();
+    $('jmSummary').value = '';
+    $('jmAmount').value = '';
+    $('jmNote').value = '';
+    $('jmCounterparty').value = '';
+    $('jmTargets').innerHTML = '';
+    $('jmRcTotal').value = '0';
     $('jmError').classList.add('d-none');
+    switchType('expense');
     journalModal.show();
-  } catch (e) {
-    alert('載入失敗: ' + e.message);
   }
-}
 
-async function confirmReverse() {
-  const id = $('jmEditId').value;
-  if (!id) return;
-  if (!confirm(`確認反向沖銷 #${id}？\n會寫入一筆方向相反的 journal，原 row 保留以利稽核。`)) return;
-  try {
-    await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' });
-    journalModal.hide();
-    reload();
-  } catch (e) { alert('反向失敗: ' + e.message); }
-}
-
-async function quickReverse(id) {
-  if (!confirm(`確認反向沖銷 #${id}？`)) return;
-  try {
-    await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' });
-    reload();
-  } catch (e) { alert('反向失敗: ' + e.message); }
-}
-
-// ── 詳情 modal ─────────────────────────────────────────────────
-const detailModal = new bootstrap.Modal($('detailModal'));
-async function openDetail(id) {
-  try {
-    const r = await api(`/B/${BOOK}/journals/${id}`);
-    const j = r.journal;
-    $('dtId').textContent = j.id;
-    let html = '<div class="detail-meta">';
-    html += `<div><strong>日期</strong>${j.date.slice(0,10)}</div>`;
-    html += `<div><strong>類型</strong><span class="type-chip ${j.type}">${typeName(j.type)}</span></div>`;
-    html += `<div><strong>金額</strong>$${fmt(j.amount)}</div>`;
-    if (j.type === 'reclassify') {
-      html += `<div><strong>原科目</strong>${esc(j.reclassify_from_subject_code||'')} ${esc(j.reclassify_from_subject_name||'')}</div>`;
-      if (j.targets && j.targets.length > 0) {
-        html += `<div><strong>分到 ${j.targets.length} 個科目</strong></div>`;
-        html += '<ul class="small mt-1 mb-2">';
-        for (const t of j.targets) html += `<li>${esc(t.target_subject_code||'')} ${esc(t.target_subject_name)} — $${fmt(t.amount)}</li>`;
-        html += '</ul>';
-      } else {
-        html += `<div><strong>目標科目</strong>${esc(j.subject_code||'')} ${esc(j.subject_name||'')}</div>`;
-      }
+  function switchType(t) {
+    $('jmType').value = t;
+    document.querySelectorAll('.modal-tab-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.type === t);
+    });
+    if (t === 'reclassify') {
+      $('jmStandardBody').classList.add('d-none');
+      $('jmReclassifyBody').classList.remove('d-none');
+      $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
+      if ($('jmTargets').children.length === 0) addTargetRow();
     } else {
-      html += `<div><strong>科目</strong>${esc(j.subject_code||'')} ${esc(j.subject_name||'')}</div>`;
-      if (j.transfer_out_account_name) html += `<div><strong>付款帳戶</strong>${esc(j.transfer_out_account_name)}</div>`;
-      if (j.transfer_in_account_name) html += `<div><strong>收款帳戶</strong>${esc(j.transfer_in_account_name)}</div>`;
+      $('jmStandardBody').classList.remove('d-none');
+      $('jmReclassifyBody').classList.add('d-none');
+      // 支出 → 成本 / 費用;收入 → 收入 / 業外;轉帳 → 轉帳科目
+      const filter = t === 'expense' ? ['t2', 't3'] : t === 'income' ? ['t1', 't5'] : ['t4'];
+      $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
+      $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+      $('jmIn').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+      if (t === 'expense') {
+        $('jmOutLbl').textContent = '付款帳戶 *';
+        $('jmOutWrap').classList.remove('d-none');
+        $('jmInWrap').classList.add('d-none');
+      } else if (t === 'income') {
+        $('jmOutWrap').classList.add('d-none');
+        $('jmInLbl').textContent = '收款帳戶 *';
+        $('jmInWrap').classList.remove('d-none');
+      } else {
+        $('jmOutLbl').textContent = '從(轉出)*';
+        $('jmInLbl').textContent = '到(轉入)*';
+        $('jmOutWrap').classList.remove('d-none');
+        $('jmInWrap').classList.remove('d-none');
+      }
     }
-    if (j.counterparty_name) html += `<div><strong>對象</strong>${esc(j.counterparty_name)}</div>`;
-    if (j.summary) html += `<div><strong>摘要</strong>${esc(j.summary)}</div>`;
-    if (j.note) html += `<div><strong>備註</strong>${esc(j.note)}</div>`;
-    if (j.external_source) html += `<div><strong>來源</strong>${esc(j.external_source)} / ${esc(j.external_id||'')}</div>`;
-    if (j.is_auto_posted) html += `<div><strong>由 webhook 自動入帳</strong>✓</div>`;
-    if (j.edit_count > 0) html += `<div><strong>編輯紀錄</strong>已編輯 ${j.edit_count} 次 (最後 ${j.edited_at})</div>`;
-    if (j.reversed_by_id) html += `<div class="text-danger"><strong>狀態</strong>已被 #${j.reversed_by_id} 反向沖銷</div>`;
-    if (j.reverses_id) html += `<div class="text-secondary"><strong>狀態</strong>本筆是 #${j.reverses_id} 的反向沖銷</div>`;
-    html += `<div class="text-muted small mt-2">建立於 ${j.created_at}</div>`;
-    html += '</div>';
-    $('dtBody').innerHTML = html;
-    const canModify = !j.reversed_by_id && !j.reverses_id;
-    $('dtEditBtn').style.display = canModify ? '' : 'none';
-    $('dtReverseBtn').style.display = canModify ? '' : 'none';
-    $('dtEditBtn').onclick = () => { detailModal.hide(); openEdit(id); };
-    $('dtReverseBtn').onclick = async () => {
-      if (!confirm(`確認反向沖銷 #${id}？`)) return;
-      try { await api(`/B/${BOOK}/journals/${id}`, { method: 'DELETE' }); detailModal.hide(); reload(); }
-      catch (e) { alert('反向失敗: ' + e.message); }
+  }
+
+  function addTargetRow(presetSubjectId, presetAmount) {
+    const row = document.createElement('div');
+    row.className = 'target-input-row';
+    row.innerHTML = `
+      <select class="form-select form-select-sm jm-tg-subject">
+        <option value="">— 選科目 —</option>${subjectOptionsByType(null)}
+      </select>
+      <input type="number" min="0.01" step="0.01" class="form-control form-control-sm jm-tg-amount" placeholder="金額" oninput="recalcRcTotal()">
+      <button class="btn btn-outline-danger btn-icon" onclick="this.closest('.target-input-row').remove();recalcRcTotal()">✕</button>
+    `;
+    $('jmTargets').appendChild(row);
+    if (presetSubjectId) row.querySelector('.jm-tg-subject').value = presetSubjectId;
+    if (presetAmount) { row.querySelector('.jm-tg-amount').value = presetAmount; recalcRcTotal(); }
+  }
+
+  function recalcRcTotal() {
+    let sum = 0;
+    document.querySelectorAll('.jm-tg-amount').forEach((el) => { sum += parseFloat(el.value) || 0; });
+    $('jmRcTotal').value = sum.toFixed(2);
+  }
+
+  function collectFormPayload() {
+    const t = $('jmType').value;
+    const base = {
+      date: $('jmDate').value,
+      type: t,
+      summary: $('jmSummary').value.trim() || null,
+      note: $('jmNote').value.trim() || null,
+      counterparty_id: $('jmCounterparty').value ? Number($('jmCounterparty').value) : null,
     };
-    detailModal.show();
-  } catch (e) {
-    alert('載入失敗: ' + e.message);
+    if (t === 'reclassify') {
+      const from = $('jmRcFrom').value;
+      if (!from) throw new Error('請選原科目');
+      const targets = [];
+      document.querySelectorAll('#jmTargets .target-input-row').forEach((row) => {
+        const sid = row.querySelector('.jm-tg-subject').value;
+        const amt = parseFloat(row.querySelector('.jm-tg-amount').value);
+        if (sid && amt > 0) targets.push({ subject_id: Number(sid), amount: amt });
+      });
+      if (targets.length === 0) throw new Error('請至少填一個要分到的科目和金額');
+      return { ...base, reclassify_from_subject_id: Number(from), targets };
+    }
+    const subjectId = $('jmSubject').value;
+    const amount = parseFloat($('jmAmount').value);
+    if (!subjectId) throw new Error('請選會計科目');
+    if (!(amount > 0)) throw new Error('金額必須大於 0');
+    const payload = { ...base, subject_id: Number(subjectId), amount };
+    if (t === 'expense') payload.transfer_out_account_id = Number($('jmOut').value);
+    else if (t === 'income') payload.transfer_in_account_id = Number($('jmIn').value);
+    else if (t === 'transfer') {
+      payload.transfer_out_account_id = Number($('jmOut').value);
+      payload.transfer_in_account_id = Number($('jmIn').value);
+    }
+    if (t === 'expense' && !payload.transfer_out_account_id) throw new Error('請選付款帳戶');
+    if (t === 'income' && !payload.transfer_in_account_id) throw new Error('請選收款帳戶');
+    if (t === 'transfer' && (!payload.transfer_out_account_id || !payload.transfer_in_account_id)) throw new Error('請選轉出和轉入帳戶');
+    if (t === 'transfer' && payload.transfer_out_account_id === payload.transfer_in_account_id) throw new Error('轉出和轉入帳戶不能相同');
+    return payload;
   }
-}
 
-// ── 排序（長按 ≡ 拖曳）— 支援 accounts / subjects ─────────────
-const reorderModal = new bootstrap.Modal($('reorderModal'));
-let reorderSortables = [];   // 可能有多個 Sortable（科目時每 parent_type 一個）
-let reorderKind = 'accounts'; // 'accounts' | 'subjects'
-
-const PARENT_TYPE_LABELS = {
-  t1: 't1 — 銷貨收入', t2: 't2 — 銷貨成本', t3: 't3 — 營業費用',
-  t4: 't4 — 資金 / 資產 / 負債', t5: 't5 — 業外收入 / 其他',
-};
-
-function destroyReorderSortables() {
-  for (const s of reorderSortables) { try { s.destroy(); } catch (_) {} }
-  reorderSortables = [];
-}
-
-// 入口 1：帳戶排序
-function openReorderAccounts() {
-  reorderKind = 'accounts';
-  $('reorderError').classList.add('d-none');
-  document.querySelector('#reorderModal .modal-title').textContent = '帳戶排序';
-  $('reorderModal').querySelector('.reorder-hint').innerHTML =
-    '長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。';
-  const wrap = $('reorderList');
-  wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
-    ${cache.accounts.map((a) => `
-      <li class="reorder-item" data-id="${a.id}">
-        <span class="reorder-handle">≡</span>
-        <span class="acc-name">${esc(a.name)}</span>
-        <span class="acc-type">${esc(a.type)}</span>
-      </li>
-    `).join('')}
-  </ul>`;
-  destroyReorderSortables();
-  reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
-    handle: '.reorder-handle',
-    animation: 150,
-    delay: 150,
-    delayOnTouchOnly: true,
-    touchStartThreshold: 5,
-    ghostClass: 'dragging',
-  }));
-  reorderModal.show();
-}
-
-// 入口 2：科目排序（限制 parent_type；null = 全部）
-function openReorderSubjects(parentTypes /* array | null */) {
-  reorderKind = 'subjects';
-  $('reorderError').classList.add('d-none');
-  document.querySelector('#reorderModal .modal-title').textContent = '科目排序';
-  $('reorderModal').querySelector('.reorder-hint').innerHTML =
-    '長按左邊 <strong>≡</strong> 然後拖曳。同一類別內可拖（不同類別之間不能跨）。';
-
-  // group by parent_type，保持 cache.subjects 現有順序（已是 display_order）
-  const groups = {};
-  for (const s of cache.subjects) {
-    if (parentTypes && !parentTypes.includes(s.parent_type)) continue;
-    (groups[s.parent_type] ||= []).push(s);
+  async function saveJournal() {
+    $('jmError').classList.add('d-none');
+    let payload;
+    try {
+      payload = collectFormPayload();
+    } catch (e) {
+      $('jmError').textContent = e.message;
+      $('jmError').classList.remove('d-none');
+      return;
+    }
+    const editId = $('jmEditId').value;
+    const btn = $('jmSaveBtn');
+    btn.disabled = true; btn.textContent = '儲存中...';
+    try {
+      if (editId) {
+        delete payload.type;          // 類型存下去就不能改;要換類型請沖銷後重記
+        await api(`/B/${BOOK}/journals/${editId}`, { method: 'PATCH', body: payload });
+        lastResult = { id: Number(editId), ok: true, msg: `✓ 第 ${editId} 筆已儲存` };
+      } else {
+        await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
+        lastResult = null;
+        inlineResult($('opMsg'), true, '✓ 已記下一筆');
+      }
+      journalModal.hide();
+      reload();
+    } catch (e) {
+      if (e.handled) return;
+      $('jmError').textContent = e.message;
+      $('jmError').classList.remove('d-none');
+    } finally {
+      btn.disabled = false; btn.textContent = '儲存';
+    }
   }
-  // 用固定順序 t1→t5
-  const orderedKeys = ['t1','t2','t3','t4','t5'].filter((k) => groups[k]);
 
-  const wrap = $('reorderList');
-  wrap.innerHTML = orderedKeys.map((pt) => `
-    <div class="reorder-group-title">${esc(PARENT_TYPE_LABELS[pt] || pt)}</div>
-    <ul class="reorder-list reorder-sublist" data-parent-type="${pt}" style="margin:0;padding:0">
-      ${groups[pt].map((s) => `
-        <li class="reorder-item" data-id="${s.id}">
+  async function openEdit(id) {
+    const tr = rowEl(id);
+    const where = tr || $('opMsg');
+    try {
+      const r = await api(`/B/${BOOK}/journals/${id}`);
+      const j = r.journal;
+      if (j.reversed_by_id) { inlineResult(where, false, '這筆已經被沖銷,不能再編輯'); return; }
+      if (j.reverses_id) { inlineResult(where, false, '沖銷單不能編輯'); return; }
+      if (j.type === 'composite' || j.is_composite) { inlineResult(where, false, '複式記帳(收班、薪資等)不能直接改,要改請沖銷後重記'); return; }
+      $('jmEditId').value = id;
+      $('jmTitle').textContent = `編輯 #${id}`;
+      if (CC.can(myRole, 'admin')) $('jmReverseBtn').classList.remove('d-none'); else $('jmReverseBtn').classList.add('d-none');
+      $('jmTabBar').style.pointerEvents = 'none';
+      $('jmTabBar').style.opacity = '.5';
+      if (j.edit_count > 0) {
+        $('jmEditedBanner').textContent = `這筆已經改過 ${j.edit_count} 次(最後一次 ${fmtDateTime(j.edited_at)})`;
+        $('jmEditedBanner').classList.remove('d-none');
+      } else {
+        $('jmEditedBanner').classList.add('d-none');
+      }
+      switchType(j.type);
+      $('jmDate').value = fmtDate(j.date);
+      $('jmSummary').value = j.summary || '';
+      $('jmNote').value = j.note || '';
+      $('jmCounterparty').value = j.counterparty_id || '';
+      if (j.type === 'reclassify') {
+        $('jmRcFrom').value = j.reclassify_from_subject_id || '';
+        $('jmTargets').innerHTML = '';
+        if (j.targets && j.targets.length > 0) {
+          for (const t of j.targets) addTargetRow(t.target_subject_id, t.amount);
+        } else {
+          addTargetRow(j.subject_id, j.amount);
+        }
+        recalcRcTotal();
+      } else {
+        $('jmSubject').value = j.subject_id || '';
+        $('jmAmount').value = j.amount;
+        if (j.transfer_out_account_id) $('jmOut').value = j.transfer_out_account_id;
+        if (j.transfer_in_account_id) $('jmIn').value = j.transfer_in_account_id;
+      }
+      $('jmError').classList.add('d-none');
+      journalModal.show();
+    } catch (e) {
+      if (e.handled) return;
+      inlineResult(where, false, '打不開這筆:' + e.message);
+    }
+  }
+
+  // ── 詳情 modal ─────────────────────────────────────────────────
+  const detailModal = new bootstrap.Modal($('detailModal'));
+  async function openDetail(id) {
+    const tr = rowEl(id);
+    try {
+      const r = await api(`/B/${BOOK}/journals/${id}`);
+      const j = r.journal;
+      const isComposite = j.type === 'composite' || j.is_composite === true;
+      $('dtId').textContent = j.id;
+      let html = '<div class="detail-meta">';
+      html += `<div><strong>日期</strong>${esc(fmtDate(j.date))}</div>`;
+      html += `<div><strong>類型</strong><span class="type-chip ${esc(isComposite ? 'composite' : j.type)}">${esc(typeName(isComposite ? 'composite' : j.type))}</span></div>`;
+      html += `<div><strong>金額</strong>${esc(fmtMoney(j.amount))}</div>`;
+      if (isComposite) {
+        html += '<div><strong>各腳明細</strong></div><div id="dtLegs" class="legs-box mt-1">讀取中...</div>';
+      } else if (j.type === 'reclassify') {
+        html += `<div><strong>原科目</strong>${esc(j.reclassify_from_subject_code || '')} ${esc(j.reclassify_from_subject_name || '')}</div>`;
+        if (j.targets && j.targets.length > 0) {
+          html += `<div><strong>分到 ${esc(j.targets.length)} 個科目</strong></div>`;
+          html += '<ul class="small mt-1 mb-2">';
+          for (const t of j.targets) html += `<li>${esc(t.target_subject_code || '')} ${esc(t.target_subject_name)} — ${esc(fmtMoney(t.amount))}</li>`;
+          html += '</ul>';
+        } else {
+          html += `<div><strong>目標科目</strong>${esc(j.subject_code || '')} ${esc(j.subject_name || '')}</div>`;
+        }
+      } else {
+        html += `<div><strong>科目</strong>${esc(j.subject_code || '')} ${esc(j.subject_name || '')}</div>`;
+        if (j.transfer_out_account_name) html += `<div><strong>付款帳戶</strong>${esc(j.transfer_out_account_name)}</div>`;
+        if (j.transfer_in_account_name) html += `<div><strong>收款帳戶</strong>${esc(j.transfer_in_account_name)}</div>`;
+      }
+      if (j.counterparty_name) html += `<div><strong>對象</strong>${esc(j.counterparty_name)}</div>`;
+      if (j.summary) html += `<div><strong>摘要</strong>${esc(j.summary)}</div>`;
+      if (j.note) html += `<div><strong>備註</strong>${esc(j.note)}</div>`;
+      if (j.external_source) html += `<div><strong>來源</strong>${esc(CC.sourceName(j.external_source))}(單號 ${esc(j.external_id || '')})</div>`;
+      if (j.is_auto_posted) html += `<div><strong>入帳方式</strong>由現場系統自動入帳</div>`;
+      if (j.edit_count > 0) html += `<div><strong>編輯紀錄</strong>已編輯 ${esc(j.edit_count)} 次(最後 ${esc(fmtDateTime(j.edited_at))})</div>`;
+      if (j.reversed_by_id) html += `<div class="text-danger"><strong>狀態</strong>已被 #${esc(j.reversed_by_id)} 沖銷</div>`;
+      if (j.reverses_id) html += `<div class="text-secondary"><strong>狀態</strong>本筆是 #${esc(j.reverses_id)} 的沖銷單</div>`;
+      html += `<div class="text-muted small mt-2">建立於 ${esc(fmtDateTime(j.created_at))}</div>`;
+      html += '</div>';
+      $('dtBody').innerHTML = html;
+      const untouched = !j.reversed_by_id && !j.reverses_id;
+      $('dtEditBtn').style.display = untouched && !isComposite && CC.can(myRole, 'write') ? '' : 'none';
+      $('dtReverseBtn').style.display = untouched && CC.can(myRole, 'admin') ? '' : 'none';
+      $('dtEditBtn').onclick = () => { detailModal.hide(); openEdit(id); };
+      $('dtReverseBtn').onclick = async () => {
+        const ok = await doReverse(id, $('dtBody'));
+        if (ok) { detailModal.hide(); reload(); }
+      };
+      detailModal.show();
+      if (isComposite) {
+        api(`/B/${BOOK}/journals/${id}/legs`).then((lr) => {
+          $('dtLegs').innerHTML = legsTableHtml(lr.legs);
+        }).catch((e) => {
+          if (!e.handled) $('dtLegs').textContent = '讀取各腳失敗:' + e.message;
+        });
+      }
+    } catch (e) {
+      if (e.handled) return;
+      inlineResult(tr || $('opMsg'), false, '打不開這筆:' + e.message);
+    }
+  }
+
+  // ── 排序(長按 ≡ 拖曳)— 支援 帳戶 / 科目 / 對象 ───────────────
+  const reorderModal = new bootstrap.Modal($('reorderModal'));
+  let reorderSortables = [];
+  let reorderKind = 'accounts'; // 'accounts' | 'subjects' | 'counterparties'
+
+  function destroyReorderSortables() {
+    for (const s of reorderSortables) { try { s.destroy(); } catch (_) { /* ignore */ } }
+    reorderSortables = [];
+  }
+
+  function openReorderAccounts() {
+    reorderKind = 'accounts';
+    $('reorderError').classList.add('d-none');
+    document.querySelector('#reorderModal .modal-title').textContent = '帳戶排序';
+    $('reorderModal').querySelector('.reorder-hint').innerHTML =
+      '長按左邊 <strong>≡</strong> 然後拖曳,調整下拉選單顯示順序。';
+    const wrap = $('reorderList');
+    wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
+      ${cache.accounts.map((a) => `
+        <li class="reorder-item" data-id="${esc(a.id)}">
           <span class="reorder-handle">≡</span>
-          <span class="acc-name">${esc(s.code || '')} ${esc(s.name)}</span>
-          <span class="acc-type">${esc(pt)}</span>
+          <span class="acc-name">${esc(a.name)}</span>
+          <span class="acc-type">${esc(CC.ACCT_TYPE_NAME[a.type] || '其他')}</span>
         </li>
       `).join('')}
-    </ul>
-  `).join('');
-
-  destroyReorderSortables();
-  for (const ul of wrap.querySelectorAll('.reorder-sublist')) {
-    reorderSortables.push(Sortable.create(ul, {
-      handle: '.reorder-handle',
-      animation: 150,
-      delay: 150,
-      delayOnTouchOnly: true,
-      touchStartThreshold: 5,
-      ghostClass: 'dragging',
-      group: { name: 'sub-' + ul.dataset.parentType, pull: false, put: false }, // 鎖住跨組
+    </ul>`;
+    destroyReorderSortables();
+    reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
+      handle: '.reorder-handle', animation: 150, delay: 150, delayOnTouchOnly: true, touchStartThreshold: 5, ghostClass: 'dragging',
     }));
+    reorderModal.show();
   }
-  reorderModal.show();
-}
 
-// 入口 3：對象排序（flat list）
-function openReorderCounterparties() {
-  reorderKind = 'counterparties';
-  $('reorderError').classList.add('d-none');
-  document.querySelector('#reorderModal .modal-title').textContent = '對象排序';
-  $('reorderModal').querySelector('.reorder-hint').innerHTML =
-    '長按左邊 <strong>≡</strong> 然後拖曳，調整下拉選單顯示順序。';
-  const wrap = $('reorderList');
-  wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
-    ${cache.counterparties.map((c) => `
-      <li class="reorder-item" data-id="${c.id}">
-        <span class="reorder-handle">≡</span>
-        <span class="acc-name">${esc(c.name)}</span>
-        <span class="acc-type">${esc(c.type || c.category || '')}</span>
-      </li>
-    `).join('')}
-  </ul>`;
-  destroyReorderSortables();
-  reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
-    handle: '.reorder-handle',
-    animation: 150,
-    delay: 150,
-    delayOnTouchOnly: true,
-    touchStartThreshold: 5,
-    ghostClass: 'dragging',
-  }));
-  reorderModal.show();
-}
+  // 科目排序(parentTypes 限制大類;null = 全部)
+  function openReorderSubjects(parentTypes) {
+    reorderKind = 'subjects';
+    $('reorderError').classList.add('d-none');
+    document.querySelector('#reorderModal .modal-title').textContent = '科目排序';
+    $('reorderModal').querySelector('.reorder-hint').innerHTML =
+      '長按左邊 <strong>≡</strong> 然後拖曳。同一類別內可拖(不同類別之間不能跨)。';
+    const groups = {};
+    for (const s of cache.subjects) {
+      if (parentTypes && !parentTypes.includes(s.parent_type)) continue;
+      (groups[s.parent_type] ||= []).push(s);
+    }
+    const orderedKeys = ['t1', 't2', 't3', 't4', 't5'].filter((k) => groups[k]);
+    const wrap = $('reorderList');
+    wrap.innerHTML = orderedKeys.map((pt) => `
+      <div class="reorder-group-title">${esc(subjLabel(pt))}</div>
+      <ul class="reorder-list reorder-sublist" data-parent-type="${esc(pt)}" style="margin:0;padding:0">
+        ${groups[pt].map((s) => `
+          <li class="reorder-item" data-id="${esc(s.id)}">
+            <span class="reorder-handle">≡</span>
+            <span class="acc-name">${esc(s.code || '')} ${esc(s.name)}</span>
+            <span class="acc-type">${esc(subjLabel(pt))}</span>
+          </li>
+        `).join('')}
+      </ul>
+    `).join('');
+    destroyReorderSortables();
+    for (const ul of wrap.querySelectorAll('.reorder-sublist')) {
+      reorderSortables.push(Sortable.create(ul, {
+        handle: '.reorder-handle', animation: 150, delay: 150, delayOnTouchOnly: true, touchStartThreshold: 5, ghostClass: 'dragging',
+        group: { name: 'sub-' + ul.dataset.parentType, pull: false, put: false },
+      }));
+    }
+    reorderModal.show();
+  }
 
-// 入口 2a：從「記一筆 modal」按 ≡ 進來，自動帶當前 type 的 parent_types filter
-function openReorderSubjectsFromJm() {
-  const t = $('jmType').value;
-  const filter = t === 'expense' ? ['t2','t3']
-               : t === 'income'  ? ['t1','t5']
-               : t === 'transfer' ? ['t4']
-               : null;  // reclassify / 未知 → 全部
-  openReorderSubjects(filter);
-}
+  function openReorderCounterparties() {
+    reorderKind = 'counterparties';
+    $('reorderError').classList.add('d-none');
+    document.querySelector('#reorderModal .modal-title').textContent = '對象排序';
+    $('reorderModal').querySelector('.reorder-hint').innerHTML =
+      '長按左邊 <strong>≡</strong> 然後拖曳,調整下拉選單顯示順序。';
+    const wrap = $('reorderList');
+    wrap.innerHTML = `<ul class="reorder-list reorder-sublist" style="margin:0;padding:0">
+      ${cache.counterparties.map((c) => `
+        <li class="reorder-item" data-id="${esc(c.id)}">
+          <span class="reorder-handle">≡</span>
+          <span class="acc-name">${esc(c.name)}</span>
+          <span class="acc-type">${esc(CP_TYPE_NAME[c.type] || c.category || '')}</span>
+        </li>
+      `).join('')}
+    </ul>`;
+    destroyReorderSortables();
+    reorderSortables.push(Sortable.create(wrap.querySelector('.reorder-sublist'), {
+      handle: '.reorder-handle', animation: 150, delay: 150, delayOnTouchOnly: true, touchStartThreshold: 5, ghostClass: 'dragging',
+    }));
+    reorderModal.show();
+  }
 
-async function saveAccountOrder() {
-  const btn = $('reorderSaveBtn');
-  $('reorderError').classList.add('d-none');
-  btn.disabled = true; btn.textContent = '儲存中...';
-  try {
-    let updates = [];
+  // 從「記一筆」視窗按 ≡ 進來,自動帶目前類型的科目範圍
+  function openReorderSubjectsFromJm() {
+    const t = $('jmType').value;
+    const filter = t === 'expense' ? ['t2', 't3']
+                 : t === 'income' ? ['t1', 't5']
+                 : t === 'transfer' ? ['t4']
+                 : null;
+    openReorderSubjects(filter);
+  }
 
-    if (reorderKind === 'accounts') {
-      const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
-      items.forEach((li, idx) => {
-        const id = Number(li.dataset.id);
-        const newOrder = (idx + 1) * 10;
-        const old = cache.accounts.find((a) => a.id === id);
-        if (!old || old.display_order !== newOrder) {
-          updates.push(api(`/B/${BOOK}/accounts/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
-        }
-      });
-    } else if (reorderKind === 'subjects') {
-      // 每個 sublist 各自 10/20/30...（跨 parent_type 不影響，因後端 ORDER BY parent_type, display_order）
-      for (const ul of $('reorderList').querySelectorAll('.reorder-sublist')) {
-        const items = [...ul.querySelectorAll('.reorder-item')];
+  async function saveAccountOrder() {
+    const btn = $('reorderSaveBtn');
+    $('reorderError').classList.add('d-none');
+    btn.disabled = true; btn.textContent = '儲存中...';
+    try {
+      const updates = [];
+      if (reorderKind === 'accounts') {
+        const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
         items.forEach((li, idx) => {
           const id = Number(li.dataset.id);
           const newOrder = (idx + 1) * 10;
-          const old = cache.subjects.find((s) => s.id === id);
-          if (!old || old.display_order !== newOrder) {
-            updates.push(api(`/B/${BOOK}/subjects/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
-          }
+          const old = cache.accounts.find((a) => a.id === id);
+          if (!old || old.display_order !== newOrder) updates.push(api(`/B/${BOOK}/accounts/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
+        });
+      } else if (reorderKind === 'subjects') {
+        for (const ul of $('reorderList').querySelectorAll('.reorder-sublist')) {
+          const items = [...ul.querySelectorAll('.reorder-item')];
+          items.forEach((li, idx) => {
+            const id = Number(li.dataset.id);
+            const newOrder = (idx + 1) * 10;
+            const old = cache.subjects.find((s) => s.id === id);
+            if (!old || old.display_order !== newOrder) updates.push(api(`/B/${BOOK}/subjects/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
+          });
+        }
+      } else if (reorderKind === 'counterparties') {
+        const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
+        items.forEach((li, idx) => {
+          const id = Number(li.dataset.id);
+          const newOrder = (idx + 1) * 10;
+          const old = cache.counterparties.find((c) => c.id === id);
+          if (!old || old.display_order !== newOrder) updates.push(api(`/B/${BOOK}/counterparties/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
         });
       }
-    } else if (reorderKind === 'counterparties') {
-      const items = [...$('reorderList').querySelectorAll('.reorder-sublist .reorder-item')];
-      items.forEach((li, idx) => {
-        const id = Number(li.dataset.id);
-        const newOrder = (idx + 1) * 10;
-        const old = cache.counterparties.find((c) => c.id === id);
-        if (!old || old.display_order !== newOrder) {
-          updates.push(api(`/B/${BOOK}/counterparties/${id}`, { method: 'PATCH', body: { display_order: newOrder } }));
-        }
-      });
-    }
+      if (updates.length === 0) { reorderModal.hide(); return; }
+      await Promise.all(updates);
 
-    if (updates.length === 0) {
+      if (reorderKind === 'accounts') {
+        const acc = await api(`/B/${BOOK}/accounts`);
+        cache.accounts = acc.accounts || [];
+        fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
+        const t = $('jmType').value;
+        if (t && t !== 'reclassify') {
+          const prevOut = $('jmOut').value, prevIn = $('jmIn').value;
+          $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+          $('jmIn').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
+          if (prevOut) $('jmOut').value = prevOut;
+          if (prevIn) $('jmIn').value = prevIn;
+        }
+      } else if (reorderKind === 'subjects') {
+        const subj = await api(`/B/${BOOK}/subjects`);
+        cache.subjects = subj.subjects || [];
+        fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
+        const t = $('jmType').value;
+        const filter = t === 'expense' ? ['t2', 't3'] : t === 'income' ? ['t1', 't5'] : t === 'transfer' ? ['t4'] : null;
+        if (t === 'reclassify') {
+          const prev = $('jmRcFrom').value;
+          $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
+          if (prev) $('jmRcFrom').value = prev;
+          for (const sel of document.querySelectorAll('#jmTargets .jm-tg-subject')) {
+            const prevVal = sel.value;
+            sel.innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(null);
+            if (prevVal) sel.value = prevVal;
+          }
+        } else if (t) {
+          const prev = $('jmSubject').value;
+          $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
+          if (prev) $('jmSubject').value = prev;
+        }
+      } else if (reorderKind === 'counterparties') {
+        const cp = await api(`/B/${BOOK}/counterparties`);
+        cache.counterparties = cp.counterparties || [];
+        fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
+        const prev = $('jmCounterparty').value;
+        fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
+        if (prev) $('jmCounterparty').value = prev;
+      }
       reorderModal.hide();
-      return;
+    } catch (e) {
+      if (e.handled) return;
+      $('reorderError').textContent = '儲存失敗:' + e.message;
+      $('reorderError').classList.remove('d-none');
+    } finally {
+      btn.disabled = false; btn.textContent = '儲存排序';
     }
-    await Promise.all(updates);
-
-    // 重撈對應 cache + 重 fill 所有相關 select
-    if (reorderKind === 'accounts') {
-      const acc = await api(`/B/${BOOK}/accounts`);
-      cache.accounts = acc.accounts || [];
-      fillSelect($('fAccount'), cache.accounts.map((a) => ({ value: a.id, label: a.name })), '全部');
-      const t = $('jmType').value;
-      if (t && t !== 'reclassify') {
-        const prevOut = $('jmOut').value, prevIn = $('jmIn').value;
-        $('jmOut').innerHTML = '<option value="">— 選帳戶 —</option>' + accountOptions();
-        $('jmIn').innerHTML  = '<option value="">— 選帳戶 —</option>' + accountOptions();
-        if (prevOut) $('jmOut').value = prevOut;
-        if (prevIn)  $('jmIn').value  = prevIn;
-      }
-    } else if (reorderKind === 'subjects') {
-      const subj = await api(`/B/${BOOK}/subjects`);
-      cache.subjects = subj.subjects || [];
-      fillSelect($('fSubject'), cache.subjects.map((s) => ({ value: s.id, label: `${s.code || ''} ${s.name}` })), '全部');
-      const t = $('jmType').value;
-      const filter = t === 'expense' ? ['t2','t3']
-                   : t === 'income'  ? ['t1','t5']
-                   : t === 'transfer' ? ['t4']
-                   : null;
-      if (t === 'reclassify') {
-        const prev = $('jmRcFrom').value;
-        $('jmRcFrom').innerHTML = '<option value="">— 選原科目 —</option>' + subjectOptionsByType(null);
-        if (prev) $('jmRcFrom').value = prev;
-        // target rows 也 refresh
-        for (const sel of document.querySelectorAll('#jmTargets .jm-tg-subject')) {
-          const prevVal = sel.value;
-          sel.innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(null);
-          if (prevVal) sel.value = prevVal;
-        }
-      } else if (t) {
-        const prev = $('jmSubject').value;
-        $('jmSubject').innerHTML = '<option value="">— 選科目 —</option>' + subjectOptionsByType(filter);
-        if (prev) $('jmSubject').value = prev;
-      }
-    } else if (reorderKind === 'counterparties') {
-      const cp = await api(`/B/${BOOK}/counterparties`);
-      cache.counterparties = cp.counterparties || [];
-      fillSelect($('fCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '全部');
-      const prev = $('jmCounterparty').value;
-      fillSelect($('jmCounterparty'), cache.counterparties.map((c) => ({ value: c.id, label: c.name })), '— 不指定 —');
-      if (prev) $('jmCounterparty').value = prev;
-    }
-    reorderModal.hide();
-  } catch (e) {
-    $('reorderError').textContent = '儲存失敗：' + e.message;
-    $('reorderError').classList.remove('d-none');
-  } finally {
-    btn.disabled = false; btn.textContent = '儲存排序';
   }
+
+  // 回到前景:清單重抓;沒在編輯時順便更新下拉(別人剛新增的帳戶 / 對象)
+  CC.onResume(() => {
+    if ($('journalModal').classList.contains('show') || $('reorderModal').classList.contains('show')) return;
+    if (document.querySelector('#rows .cc-result')) return;
+    loadLookups().then(reload).catch(() => {});
+  });
+
+  $('newBtn').addEventListener('click', openNew);
+
+  // 靜態按鈕上的 onclick="…" 要找得到這些函式(async 函式放在區塊裡不會自動變全域)
+  Object.assign(window, {
+    reload, clearFilters, switchType, addTargetRow, recalcRcTotal, saveJournal, reverseFromEdit,
+    openReorderAccounts, openReorderSubjects, openReorderCounterparties, openReorderSubjectsFromJm, saveAccountOrder,
+  });
+
+  // ── boot ───────────────────────────────────────────────────────
+  (async () => {
+    try {
+      myRole = await CC.loadRole();
+      if (!CC.can(myRole, 'write')) CC.lockBtn($('newBtn'), '你的角色只能查看,不能記帳');
+      await loadLookups();
+      await reload();
+      const url = new URL(location.href);
+      if (url.searchParams.get('new') === '1' && CC.can(myRole, 'write')) {
+        openNew();
+        history.replaceState({}, '', '/journals');
+      }
+    } catch (e) {
+      if (e.handled) return;
+      $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">初始化失敗:${esc(e.message)}</td></tr>`;
+      $('loading').classList.add('d-none');
+      $('content').classList.remove('d-none');
+    }
+  })();
 }
-
-// ── boot ───────────────────────────────────────────────────────
-(async () => {
-  try {
-    await loadLookups();
-    await reload();
-    // 看是否從 nav 「記一筆」進來
-    const url = new URL(location.href);
-    if (url.searchParams.get('new') === '1') {
-      openNew();
-      history.replaceState({}, '', '/journals');
-    }
-  } catch (e) {
-    $('rows').innerHTML = `<tr><td colspan="7" class="empty-state text-danger">初始化失敗: ${esc(e.message)}</td></tr>`;
-  }
-})();
 </script>
 </body>
 </html>

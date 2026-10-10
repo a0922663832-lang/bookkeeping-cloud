@@ -25,29 +25,13 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg shadow-sm">
-  <div class="container">
-    <a class="navbar-brand" href="/dashboard"><span class="brand-icon">📊</span>記帳雲</a>
-    <div class="navbar-nav me-auto">
-      <a class="nav-link active" href="/dashboard">儀表板</a>
-      <a class="nav-link" href="/pending">待審 <span id="pendingBadge"></span></a>
-      <a class="nav-link" href="/journals?new=1">記一筆</a>
-      <a class="nav-link" href="/journals">明細</a>
-      <a class="nav-link" href="/reports">報表</a>
-      <a class="nav-link" href="/setup">主檔</a>
-      <a class="nav-link" href="/settings">設定</a>
-    </div>
-    <div class="navbar-nav">
-      <span class="navbar-text me-3" id="userName"></span>
-      <a class="btn btn-sm btn-outline-secondary" href="#" id="logoutBtn">登出</a>
-    </div>
-  </div>
-</nav>
+<div id="navMount"></div>
 
 <div class="container py-4">
   <div id="loading" class="text-center text-muted py-5">載入中...</div>
   <div id="content" class="d-none">
     <h4 class="mb-3" id="monthLabel">本月概覽</h4>
+    <div id="pageMsg"></div>
 
     <div class="row g-3">
       <div class="col-md-3"><div class="kpi-card">
@@ -71,6 +55,7 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
     <div class="section-card">
       <h6 class="mb-3">近 6 月趨勢</h6>
       <canvas id="trendChart" height="90"></canvas>
+      <div id="chartMsg" class="text-muted small d-none">趨勢圖暫時畫不出來(圖表元件沒載入),上面的數字不受影響。</div>
     </div>
 
     <div class="row g-3 mt-1">
@@ -90,75 +75,76 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/common.js"></script>
 <script>
-const token = localStorage.getItem('token');
-if (!token) location.href = '/';
-const user = JSON.parse(localStorage.getItem('user') || '{}');
-document.getElementById('userName').textContent = user.name || '';
-document.getElementById('logoutBtn').addEventListener('click', (e) => {
-  e.preventDefault();
-  localStorage.clear();
-  location.href = '/';
-});
+if (CC.initPage('dashboard')) {
+  let trendChart = null;
 
-async function api(path) {
-  const r = await fetch(path, { headers: { Authorization: 'Bearer ' + token } });
-  if (r.status === 401) { localStorage.clear(); location.href = '/'; throw new Error('unauthorized'); }
-  return r.json();
-}
+  function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類', composite: '複式' })[t] || '其他'; }
 
-const BOOK = 'NEST0001';
+  async function loadDash() {
+    try {
+      const [d, pj] = await Promise.all([
+        api(`/B/${BOOK}/reports/dashboard`),
+        api(`/B/${BOOK}/pending-journals?status=pending&limit=5`),
+      ]);
+      $('monthLabel').textContent = `${d.month} 概覽`;
+      $('kpiIncome').textContent = fmtMoney(d.this_month.income);
+      $('kpiExpense').textContent = fmtMoney(d.this_month.expense);
+      const profit = parseFloat(d.this_month.profit);
+      const pE = $('kpiProfit');
+      pE.textContent = fmtMoney(profit);
+      pE.classList.remove('pos', 'neg');
+      pE.classList.add(profit >= 0 ? 'pos' : 'neg');
+      $('kpiBalance').textContent = fmtMoney(d.total_balance);
 
-function fmt(v) { return new Intl.NumberFormat('zh-TW').format(parseFloat(v || 0)); }
-function typeName(t) { return ({income:'收入',expense:'支出',transfer:'轉帳',reclassify:'重分類'})[t] || t; }
+      $('accountsList').innerHTML = (d.accounts || []).length
+        ? d.accounts.map(a => `<div class="acct-row"><span>${esc(a.name)}<span class="acct-type-badge">${esc(CC.ACCT_TYPE_NAME[a.type] || '其他')}</span></span><strong>${fmtMoney(a.current_balance)}</strong></div>`).join('')
+        : '<div class="text-muted small">尚無帳戶</div>';
 
-(async () => {
-  try {
-    const [d, pj] = await Promise.all([
-      api(`/B/${BOOK}/reports/dashboard`),
-      api(`/B/${BOOK}/pending-journals?status=pending`),
-    ]);
-    document.getElementById('monthLabel').textContent = `${d.month} 概覽`;
-    document.getElementById('kpiIncome').textContent = '$' + fmt(d.this_month.income);
-    document.getElementById('kpiExpense').textContent = '$' + fmt(d.this_month.expense);
-    const profit = parseFloat(d.this_month.profit);
-    const pE = document.getElementById('kpiProfit');
-    pE.textContent = '$' + fmt(profit);
-    pE.classList.add(profit >= 0 ? 'pos' : 'neg');
-    document.getElementById('kpiBalance').textContent = '$' + fmt(d.total_balance);
+      const total = pj.total != null ? pj.total : pj.count;
+      $('pendingList').innerHTML = (pj.count > 0)
+        ? pj.pending_journals.slice(0, 4).map(p => {
+            const j = p.proposed_journal || {};
+            return `<div class="acct-row"><span><strong>${esc(typeName(j.type))}</strong> ${fmtMoney(CC.pendingAmount(p))}<br><small class="text-muted">${esc(CC.sourceName(p.external_source))} · ${esc(j.summary || '')}</small></span></div>`;
+          }).join('') + (total > 4 ? `<div class="text-muted pt-2">還有 ${esc(total - 4)} 筆,到「待審」查看</div>` : '')
+        : '<div class="text-success">✓ 沒有待審項目</div>';
 
-    document.getElementById('accountsList').innerHTML = d.accounts.length
-      ? d.accounts.map(a => `<div class="acct-row"><span>${a.name}<span class="acct-type-badge">${a.type}</span></span><strong>$${fmt(a.current_balance)}</strong></div>`).join('')
-      : '<div class="text-muted small">尚無帳戶</div>';
+      if (window.Chart) {
+        if (trendChart) trendChart.destroy();
+        trendChart = new Chart($('trendChart'), {
+          type: 'line',
+          data: {
+            labels: d.trend_6m.map(t => t.month),
+            datasets: [
+              { label: '收入', data: d.trend_6m.map(t => parseFloat(t.income)), borderColor: '#1a6a5a', backgroundColor: 'rgba(26,106,90,.1)', fill: true, tension: 0.3 },
+              { label: '支出', data: d.trend_6m.map(t => parseFloat(t.expense)), borderColor: '#c4453a', backgroundColor: 'rgba(196,69,58,.1)', fill: true, tension: 0.3 },
+              { label: '利潤', data: d.trend_6m.map(t => parseFloat(t.profit)), borderColor: '#6a3a8a', borderWidth: 2, tension: 0.3 },
+            ],
+          },
+          options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+        });
+      } else {
+        $('trendChart').classList.add('d-none');
+        $('chartMsg').classList.remove('d-none');
+      }
 
-    const pBadge = document.getElementById('pendingBadge');
-    if (pj.count > 0) pBadge.innerHTML = ` <span class="badge bg-warning text-dark">${pj.count}</span>`;
-    document.getElementById('pendingList').innerHTML = pj.count
-      ? pj.pending_journals.slice(0, 4).map(p => {
-          const j = p.proposed_journal || {};
-          return `<div class="acct-row"><span><strong>${typeName(j.type)}</strong> $${fmt(j.amount)}<br><small class="text-muted">${p.external_source} · ${j.summary || ''}</small></span></div>`;
-        }).join('')
-      : '<div class="text-success">✓ 沒有待審項目</div>';
-
-    new Chart(document.getElementById('trendChart'), {
-      type: 'line',
-      data: {
-        labels: d.trend_6m.map(t => t.month),
-        datasets: [
-          { label: '收入', data: d.trend_6m.map(t => parseFloat(t.income)), borderColor: '#1a6a5a', backgroundColor: 'rgba(26,106,90,.1)', fill: true, tension: 0.3 },
-          { label: '支出', data: d.trend_6m.map(t => parseFloat(t.expense)), borderColor: '#c4453a', backgroundColor: 'rgba(196,69,58,.1)', fill: true, tension: 0.3 },
-          { label: '利潤', data: d.trend_6m.map(t => parseFloat(t.profit)), borderColor: '#6a3a8a', borderWidth: 2, tension: 0.3 },
-        ],
-      },
-      options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
-    });
-
-    document.getElementById('loading').classList.add('d-none');
-    document.getElementById('content').classList.remove('d-none');
-  } catch (e) {
-    document.getElementById('loading').innerHTML = '<div class="alert alert-danger">載入失敗: ' + e.message + '</div>';
+      $('loading').classList.add('d-none');
+      $('content').classList.remove('d-none');
+      inlineResult($('pageMsg'), true, '');
+    } catch (e) {
+      if (e.handled) return;
+      if (!$('content').classList.contains('d-none')) {
+        inlineResult($('pageMsg'), false, '更新失敗:' + e.message);
+      } else {
+        $('loading').innerHTML = '<div class="alert alert-danger">載入失敗:' + esc(e.message) + '</div>';
+      }
+    }
   }
-})();
+
+  CC.onResume(loadDash);
+  loadDash();
+}
 </script>
 </body>
 </html>

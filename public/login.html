@@ -23,6 +23,7 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
     <div class="brand-icon">📊</div>
     <div class="brand-title">記帳雲</div>
     <div class="brand-sub">公司記帳整合系統</div>
+    <div id="reason" class="alert alert-warning d-none small" role="alert"></div>
     <div id="err" class="alert alert-danger d-none small" role="alert"></div>
     <form id="loginForm">
       <div class="mb-3">
@@ -30,7 +31,8 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
         <select class="form-select" id="empId" required>
           <option value="">載入中…</option>
         </select>
-        <div class="form-text" id="empHint" style="font-size:11px">找不到自己？請聯絡 super_admin 在 HR /attendance 頁開通記帳雲權限</div>
+        <div class="form-text" id="empHint" style="font-size:11px">找不到自己?請找系統管理員,到人資系統的出勤頁幫你開通記帳雲權限</div>
+        <button type="button" class="btn btn-outline-secondary btn-sm mt-2 d-none" id="retryBtn">重新載入名單</button>
       </div>
       <div class="mb-4">
         <label class="form-label">PIN 密碼</label>
@@ -38,96 +40,121 @@ body{background:#f7f5f2;min-height:100vh;display:flex;align-items:center;font-fa
       </div>
       <button type="submit" class="btn btn-primary w-100" id="submitBtn" disabled>登入</button>
       <div class="text-center mt-3" style="font-size:11px;color:#888">
-        帳號 / PIN 由 LEO HR 系統統一管理<br>
-        改 PIN / 改權限請聯絡 super_admin
+        帳號和 PIN 由人資系統統一管理<br>
+        要改 PIN 或改權限,請找系統管理員
       </div>
     </form>
   </div>
 </div>
+<script src="/common.js"></script>
 <script>
-if (localStorage.getItem('token')) location.href = '/dashboard';
+(function () {
+  if (CC.getToken()) { CC.go('/dashboard'); return; }
 
-// 載入員工下拉 (從記帳雲 proxy HR /api/auth/employees-roster, 已 filter cloud_access != none)
-const ROLE_LABEL = { owner:'帳本擁有者', admin:'管理員', editor:'記帳員', viewer:'唯讀' };
-async function loadEmployees() {
+  // 被踢回來的原因(登入過期、權限被收回…)
+  try {
+    const why = new URLSearchParams(location.search).get('reason');
+    if (why) {
+      const box = document.getElementById('reason');
+      box.textContent = why;
+      box.classList.remove('d-none');
+    }
+  } catch (_) { /* ignore */ }
+
+  const ROLE_LABEL = CC.ROLE_NAME;
   const sel = document.getElementById('empId');
   const submitBtn = document.getElementById('submitBtn');
   const hint = document.getElementById('empHint');
-  try {
-    const r = await fetch('/auth/employees-roster');
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || `HTTP ${r.status}`);
-    }
-    const data = await r.json();
-    const emps = data.employees || [];
-    if (emps.length === 0) {
-      sel.innerHTML = '<option value="">（無可登入員工）</option>';
-      hint.textContent = '目前沒有員工被開通記帳雲權限，請聯絡 super_admin';
-      hint.style.color = '#c4453a';
-      return;
-    }
-    // 依部門分組
-    const byDept = {};
-    for (const e of emps) {
-      const d = e.dept || '其他';
-      if (!byDept[d]) byDept[d] = [];
-      byDept[d].push(e);
-    }
-    // 按部門排序，加 saved emp_id (last used) 預選
-    const lastEmpId = localStorage.getItem('lastEmpId') || '';
-    let html = '<option value="">— 請選擇員工 —</option>';
-    for (const dept of Object.keys(byDept).sort()) {
-      html += `<optgroup label="${dept}">`;
-      for (const e of byDept[dept]) {
-        const sel = e.emp_id === lastEmpId ? ' selected' : '';
-        const tag = ROLE_LABEL[e.cloud_access] || e.cloud_access;
-        html += `<option value="${e.emp_id}" data-name="${e.name.replace(/"/g, '&quot;')}"${sel}>${e.name}　【${tag}】　${e.emp_id}</option>`;
-      }
-      html += '</optgroup>';
-    }
-    sel.innerHTML = html;
-    submitBtn.disabled = false;
-    if (lastEmpId) document.getElementById('pin').focus();
-  } catch (err) {
-    sel.innerHTML = `<option value="">（載入失敗）</option>`;
-    hint.textContent = '無法連到 LEO HR 系統取得員工名單：' + err.message;
-    hint.style.color = '#c4453a';
-  }
-}
-loadEmployees();
+  const retryBtn = document.getElementById('retryBtn');
 
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const emp_id = document.getElementById('empId').value;
-  const pin = document.getElementById('pin').value;
-  if (!emp_id) { return; }
-  const errBox = document.getElementById('err');
-  const btn = document.getElementById('submitBtn');
-  errBox.classList.add('d-none');
-  btn.disabled = true; btn.textContent = '登入中...';
-  try {
-    const r = await fetch('/auth/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emp_id, pin }),
-    });
-    const data = await r.json();
-    if (!r.ok) {
-      errBox.textContent = data.error || '登入失敗';
-      errBox.classList.remove('d-none');
-      btn.disabled = false; btn.textContent = '登入';
-      return;
-    }
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('user', JSON.stringify(data.user));
-    localStorage.setItem('lastEmpId', emp_id);  // 下次自動選回
-    location.href = '/dashboard';
-  } catch (err) {
-    errBox.textContent = '連線錯誤: ' + err.message;
-    errBox.classList.remove('d-none');
-    btn.disabled = false; btn.textContent = '登入';
+  function setHint(text, bad) {
+    hint.textContent = text;
+    hint.style.color = bad ? '#c4453a' : '';
   }
-});
+
+  // 載入員工下拉(從記帳雲代取人資名單,只含有開通記帳雲權限的人)
+  async function loadEmployees() {
+    retryBtn.classList.add('d-none');
+    submitBtn.disabled = true;
+    sel.innerHTML = '<option value="">載入中…</option>';
+    try {
+      let r;
+      try { r = await fetch('/auth/employees-roster'); }
+      catch (_) { throw new Error('連線有問題,請檢查網路'); }
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(CC.friendlyError(r.status, d));
+      }
+      const data = await r.json();
+      const emps = data.employees || [];
+      if (emps.length === 0) {
+        sel.innerHTML = '<option value="">(沒有可以登入的員工)</option>';
+        setHint('目前沒有員工被開通記帳雲權限,請找系統管理員', true);
+        return;
+      }
+      const byDept = {};
+      for (const e of emps) {
+        const d = e.dept || '其他';
+        (byDept[d] = byDept[d] || []).push(e);
+      }
+      let lastEmpId = '';
+      try { lastEmpId = localStorage.getItem('lastEmpId') || ''; } catch (_) { /* ignore */ }
+      let html = '<option value="">— 請選擇員工 —</option>';
+      for (const dept of Object.keys(byDept).sort()) {
+        html += `<optgroup label="${esc(dept)}">`;
+        for (const e of byDept[dept]) {
+          const picked = e.emp_id === lastEmpId ? ' selected' : '';
+          const tag = ROLE_LABEL[e.cloud_access] || '已開通';
+          html += `<option value="${esc(e.emp_id)}"${picked}>${esc(e.name)}　【${esc(tag)}】　${esc(e.emp_id)}</option>`;
+        }
+        html += '</optgroup>';
+      }
+      sel.innerHTML = html;
+      submitBtn.disabled = false;
+      setHint('找不到自己?請找系統管理員,到人資系統的出勤頁幫你開通記帳雲權限', false);
+      if (lastEmpId) document.getElementById('pin').focus();
+    } catch (err) {
+      sel.innerHTML = '<option value="">(名單載入失敗)</option>';
+      setHint('沒辦法取得員工名單:' + err.message, true);
+      retryBtn.classList.remove('d-none');
+    }
+  }
+  retryBtn.addEventListener('click', loadEmployees);
+  loadEmployees();
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const emp_id = sel.value;
+    const pin = document.getElementById('pin').value;
+    if (!emp_id) return;
+    const errBox = document.getElementById('err');
+    errBox.classList.add('d-none');
+    submitBtn.disabled = true; submitBtn.textContent = '登入中...';
+    try {
+      const r = await fetch('/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emp_id, pin, device_id: CC.deviceId() }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        let msg = CC.friendlyError(r.status, data);
+        if (r.status === 401 && !CC.CJK.test(String(data.error || ''))) msg = '編號或密碼不對,請再試一次';
+        errBox.textContent = msg;
+        errBox.classList.remove('d-none');
+        submitBtn.disabled = false; submitBtn.textContent = '登入';
+        return;
+      }
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      localStorage.setItem('lastEmpId', emp_id);  // 下次自動選回
+      CC.go('/dashboard');
+    } catch (err) {
+      errBox.textContent = '連線有問題,請檢查網路後再試';
+      errBox.classList.remove('d-none');
+      submitBtn.disabled = false; submitBtn.textContent = '登入';
+    }
+  });
+})();
 </script>
 </body>
 </html>
