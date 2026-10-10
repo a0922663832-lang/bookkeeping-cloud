@@ -41,7 +41,7 @@ async function loadBookMiddleware(req, res, next) {
     [code, req.user.id]
   );
   if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'book not found or no access' });
+    return res.status(404).json({ error: '找不到這本帳,或你沒有權限看' });
   }
   const row = result.rows[0];
   req.book = row;
@@ -49,16 +49,62 @@ async function loadBookMiddleware(req, res, next) {
   next();
 }
 
+const ROLE_ZH = { owner: '老闆', admin: '管理員', editor: '記帳員', viewer: '唯讀' };
+
 function requireBookRole(...roles) {
   return (req, res, next) => {
     if (!req.bookMember || !roles.includes(req.bookMember.role)) {
-      return res.status(403).json({ error: `forbidden, requires role: ${roles.join(' or ')}` });
+      return res.status(403).json({ error: `你的角色不能做這個(需要${roles.map((r) => ROLE_ZH[r] || r).join(' / ')})` });
     }
     next();
   };
 }
 
 const loadBook = asyncHandler(loadBookMiddleware);
+
+// ── 帳本欄位驗證(2026-10-10 記帳雲重掃 G2 / Y45 / Y53)─────────────────────────
+// 以前 PATCH 完全沒驗:統編 8 個非數字字元照收、太長回 500 + 資料庫原文;幣別、名稱長度沒驗。
+const MAIN_BOOK_CODE = process.env.HR_DEFAULT_BOOK_CODE || 'NEST0001';
+const VALID_CURRENCIES = ['TWD', 'USD', 'JPY', 'CNY', 'HKD', 'EUR'];
+
+/** 驗一個欄位;回 { value } 或 { error }(白話) */
+function checkBookField(field, v) {
+  switch (field) {
+    case 'name': {
+      if (typeof v !== 'string' || !v.trim()) return { error: '帳本名稱必填' };
+      if (v.trim().length > 50) return { error: '帳本名稱最多 50 個字' };
+      return { value: v.trim() };
+    }
+    case 'company_name': {
+      if (v === null || v === '') return { value: null };
+      if (typeof v !== 'string') return { error: '公司名稱格式不對' };
+      if (v.trim().length > 100) return { error: '公司名稱最多 100 個字' };
+      return { value: v.trim() || null };
+    }
+    case 'tax_id': {
+      if (v === null || v === '') return { value: null };
+      if (typeof v !== 'string' || !/^\d{8}$/.test(v.trim())) return { error: '統一編號要是 8 位數字' };
+      return { value: v.trim() };
+    }
+    case 'currency': {
+      if (typeof v !== 'string' || !VALID_CURRENCIES.includes(v.trim().toUpperCase())) {
+        return { error: `幣別只能選 ${VALID_CURRENCIES.join(' / ')}` };
+      }
+      return { value: v.trim().toUpperCase() };
+    }
+    case 'fiscal_year_start_month': {
+      const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+      if (!Number.isInteger(n) || n < 1 || n > 12) return { error: '會計年度起始月要是 1 到 12' };
+      return { value: n };
+    }
+    case 'posting_mode': {
+      if (!['auto', 'review', 'manual'].includes(v)) return { error: '記帳模式只能是:直接入帳 / 進待審 / 拒收' };
+      return { value: v };
+    }
+    default:
+      return { error: '不能改這個欄位' };
+  }
+}
 
 // ── GET /books ───────────────────────────────────────────────────────
 router.get('/books', asyncHandler(async (req, res) => {
@@ -75,18 +121,34 @@ router.get('/books', asyncHandler(async (req, res) => {
 }));
 
 // ── POST /books ──────────────────────────────────────────────────────
+// Y53:以前任何登入的人(含唯讀)都能開新帳本並自動變成 owner,新帳本也沒有預設科目(要等下次重啟才補)。
+// 現在只有主帳本(NEST0001)的老闆能開;建完當場補預設科目 / 帳戶。
 router.post('/books', asyncHandler(async (req, res) => {
-  const { name, company_name, tax_id, currency, fiscal_year_start_month } = req.body || {};
-  if (!name || name.length < 1 || name.length > 50) {
-    return res.status(400).json({ error: 'name required (1-50 chars)' });
+  const ownerCheck = await query(
+    `SELECT 1 FROM book_members bm JOIN books b ON b.id = bm.book_id
+      WHERE b.code = $1 AND b.is_active = TRUE AND bm.user_id = $2 AND bm.role = 'owner'`,
+    [MAIN_BOOK_CODE, req.user.id]
+  );
+  if (ownerCheck.rows.length === 0) {
+    return res.status(403).json({ error: '只有老闆能開新帳本' });
   }
-  if (tax_id && !/^\d{8}$/.test(tax_id)) {
-    return res.status(400).json({ error: 'tax_id must be 8 digits' });
+
+  const b0 = req.body || {};
+  const fields = {
+    name: b0.name,
+    company_name: b0.company_name == null ? null : b0.company_name,
+    tax_id: b0.tax_id == null ? null : b0.tax_id,
+    currency: b0.currency == null || b0.currency === '' ? 'TWD' : b0.currency,
+    fiscal_year_start_month: b0.fiscal_year_start_month == null || b0.fiscal_year_start_month === '' ? 1 : b0.fiscal_year_start_month,
+  };
+  const clean = {};
+  for (const [f, v] of Object.entries(fields)) {
+    const c = checkBookField(f, v);
+    if (c.error) return res.status(400).json({ error: c.error });
+    clean[f] = c.value;
   }
-  const month = fiscal_year_start_month == null ? 1 : parseInt(fiscal_year_start_month, 10);
-  if (!(month >= 1 && month <= 12)) {
-    return res.status(400).json({ error: 'fiscal_year_start_month must be 1-12' });
-  }
+  const { name, company_name, tax_id, currency } = clean;
+  const month = clean.fiscal_year_start_month;
 
   // 產生 unique bookCode (重試最多 10 次)
   let code = null;
@@ -99,7 +161,18 @@ router.post('/books', asyncHandler(async (req, res) => {
     }
   }
   if (!code) {
-    return res.status(500).json({ error: 'failed to generate unique book code' });
+    return res.status(500).json({ error: '帳本代碼產生失敗,請再按一次' });
+  }
+  // 預設科目 / 帳戶的種子函式(收尾會從 server.js 搬到 src/seedDefaults.js,匯出 { seedDefaultsForBook(client, bookId) })。
+  // 用到時才載入:檔案還沒到位也不會讓整個記帳雲開不了機,只有「開新帳本」這個動作會失敗並說明。
+  let seedDefaultsForBook;
+  try {
+    ({ seedDefaultsForBook } = require('../seedDefaults'));
+  } catch (e) {
+    console.error('[books] 載入 seedDefaults 失敗:', e.message);
+  }
+  if (typeof seedDefaultsForBook !== 'function') {
+    return res.status(503).json({ error: '開新帳本的功能還沒準備好(缺預設科目),請告訴技術' });
   }
 
   const book = await withTransaction(async (client) => {
@@ -113,7 +186,7 @@ router.post('/books', asyncHandler(async (req, res) => {
         name,
         company_name || null,
         tax_id || null,
-        currency || 'TWD',
+        currency,
         month,
         req.user.id,
       ]
@@ -123,6 +196,7 @@ router.post('/books', asyncHandler(async (req, res) => {
       `INSERT INTO book_members (book_id, user_id, role) VALUES ($1, $2, 'owner')`,
       [b.id, req.user.id]
     );
+    await seedDefaultsForBook(client, b.id);   // 同一個 transaction:種子失敗整本不建
     return b;
   });
 
@@ -144,16 +218,16 @@ router.patch(
     const updates = [];
     const params = [];
     const allowed = ['name', 'company_name', 'tax_id', 'currency', 'fiscal_year_start_month', 'posting_mode'];
+    const body = req.body || {};
     for (const field of allowed) {
-      if (req.body[field] === undefined) continue;
-      if (field === 'posting_mode' && !['auto', 'review', 'manual'].includes(req.body[field])) {
-        return res.status(400).json({ error: 'posting_mode must be auto / review / manual' });
-      }
+      if (body[field] === undefined) continue;
+      const c = checkBookField(field, body[field]);
+      if (c.error) return res.status(400).json({ error: c.error });
       updates.push(`${field} = $${params.length + 1}`);
-      params.push(req.body[field]);
+      params.push(c.value);
     }
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'no updatable fields' });
+      return res.status(400).json({ error: '沒有要改的欄位' });
     }
     updates.push(`updated_at = NOW()`);
     params.push(req.book.id);
@@ -200,3 +274,4 @@ router.patch('/B/:bookCode/members/:userId', (_req, res) => res.status(410).json
 router.delete('/B/:bookCode/members/:userId', (_req, res) => res.status(410).json(MEMBERS_GONE_MSG));
 
 module.exports = router;
+module.exports._internals = { checkBookField };

@@ -11,7 +11,7 @@
 
 const express = require('express');
 const { query, withTransaction } = require('../db');
-const { hashPassword, verifyPassword, signToken, requireAuth } = require('../auth');
+const { hashPassword, verifyPassword, signToken, requireAuth, roleForCloudAccess, hrVerFromLogin, forgetUser } = require('../auth');
 const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
@@ -24,26 +24,52 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_CLOUD_ACCESS = new Set(['none', 'viewer', 'editor', 'admin', 'owner']);
 
 // ─── HR proxy login ─────────────────────────────────────────────────
-async function hrLogin(emp_id, pin) {
+// device_id(2026-10-10 記帳雲重掃 Y16):HR 鎖「編號 + 裝置」;以前雲端代打不帶裝置代號,
+// HR 只看得到雲端這一個來源位址 → 任何人在登入頁對老闆的編號亂打 5 次,老闆 10 分鐘進不了記帳雲。
+// 現在把前端 localStorage 產的裝置代號轉給 HR(只收英數 - _,最多 64 字;不合格就不帶,HR 退回看來源位址)。
+function cleanDeviceId(v) {
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : undefined;
+}
+
+async function hrLogin(emp_id, pin, device_id) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
+    const body = { emp_id, pin };
+    if (device_id) body.device_id = device_id;
     const r = await fetch(`${HR_BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emp_id, pin }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     });
     clearTimeout(timer);
     const data = await r.json().catch(() => ({}));
-    return { status: r.status, data };
+    return { status: r.status, data, retryAfter: r.headers && r.headers.get ? r.headers.get('retry-after') : null };
   } catch (e) {
     clearTimeout(timer);
     if (e.name === 'AbortError') {
-      return { status: 504, data: { error: 'HR upstream timeout' } };
+      return { status: 504, data: {} };
     }
-    return { status: 502, data: { error: 'HR upstream unreachable: ' + e.message } };
+    return { status: 502, data: {} };
   }
+}
+
+/**
+ * HR 429 → 等幾秒。HR 文案長這樣「密碼錯太多次，請 N 分鐘後再試…」(lib/hr/loginGuard.js lockedLoginMsg);
+ * 有 Retry-After 標頭優先;都看不懂 → 10 分鐘(HR 鎖的長度)。
+ */
+function retryAfterSec(retryAfterHeader, msg) {
+  const h = Number(retryAfterHeader);
+  if (Number.isFinite(h) && h > 0) return Math.ceil(h);
+  const s = String(msg || '');
+  const min = s.match(/(\d+)\s*分鐘/);
+  if (min) return Number(min[1]) * 60;
+  const sec = s.match(/(\d+)\s*秒/);
+  if (sec) return Number(sec[1]);
+  return 600;
 }
 
 /**
@@ -123,27 +149,38 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   // ── 主路徑: HR SSO ──
-  const emp_id = b.emp_id;
-  const pin = b.pin;
+  const okType = (v) => typeof v === 'string' || typeof v === 'number';
+  const emp_id = okType(b.emp_id) ? String(b.emp_id).trim() : '';
+  const pin = okType(b.pin) ? String(b.pin) : '';
   if (!emp_id || !pin) {
-    return res.status(400).json({ error: 'emp_id and pin required' });
+    return res.status(400).json({ error: '請選擇員工並輸入密碼' });
   }
 
-  const { status, data: hrData } = await hrLogin(emp_id, pin);
+  const { status, data: hrData, retryAfter } = await hrLogin(emp_id, pin, cleanDeviceId(b.device_id));
   if (status === 502 || status === 504) {
-    return res.status(status).json({ error: hrData.error || 'HR upstream error' });
+    return res.status(status).json({ error: '人資系統連不上,請稍後再試' });
+  }
+  if (status === 429) {
+    const sec = retryAfterSec(retryAfter, hrData && hrData.error);
+    res.set('Retry-After', String(sec));
+    return res.status(429).json({
+      error: `這個編號嘗試太多次,請 ${Math.max(1, Math.ceil(sec / 60))} 分鐘後再試`,
+      retry_after_sec: sec,
+    });
   }
   if (status === 401) {
-    return res.status(401).json({ error: hrData.error || 'HR rejected credentials' });
+    // HR 的文案已經是白話(「編號或密碼不對」「帳號已停用…」「還沒設密碼…」)
+    return res.status(401).json({ error: (hrData && typeof hrData.error === 'string' && hrData.error) || '編號或密碼不對' });
   }
   if (status !== 200 || !hrData || !hrData.emp_id) {
-    return res.status(500).json({ error: 'unexpected HR response', hr_status: status });
+    console.warn(`[auth] HR 登入回應看不懂:HTTP ${status}`);
+    return res.status(502).json({ error: '人資系統回應異常,請稍後再試' });
   }
 
   const cloud_access = hrData.cloud_access || 'none';
-  if (!VALID_CLOUD_ACCESS.has(cloud_access) || cloud_access === 'none') {
+  if (!VALID_CLOUD_ACCESS.has(cloud_access) || !roleForCloudAccess(cloud_access)) {
     return res.status(403).json({
-      error: '未開通記帳雲端權限。請聯絡 super_admin 在 HR /attendance 頁面開通。',
+      error: '你還沒開通記帳雲權限,請找老闆在人資系統開通',
       emp_id: hrData.emp_id,
     });
   }
@@ -154,8 +191,14 @@ router.post('/login', asyncHandler(async (req, res) => {
     role: hrData.role,
     cloud_access,
   });
+  forgetUser(user.id);   // 下一個請求重新比對 HR 名單、同步各帳本角色(含 NEST0099 鏡射)
 
-  const token = signToken({ userId: user.id, email: user.email });
+  // hv = HR 的密碼版本(改 PIN 會 +1);之後每個請求跟 HR 名單的 ver 比,不同就請他重新登入(Y15)。
+  // HR 沒給 → 不放進 token → 不比對。
+  const tokenPayload = { userId: user.id, email: user.email };
+  const hv = hrVerFromLogin(hrData);
+  if (hv !== undefined) tokenPayload.hv = hv;
+  const token = signToken(tokenPayload);
   res.json({
     token,
     user: {
@@ -180,10 +223,13 @@ router.get('/employees-roster', asyncHandler(async (req, res) => {
     const r = await fetch(`${HR_BASE_URL}/api/auth/employees-roster`, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!r.ok) {
-      return res.status(r.status).json({ error: `HR roster HTTP ${r.status}` });
+      return res.status(502).json({ error: '人資系統的員工名單暫時拿不到,請稍後再試' });
     }
     const rows = await r.json();
-    // 只回有 cloud_access != 'none' (含 viewer/editor/admin/owner) 的員工
+    if (!Array.isArray(rows)) {
+      return res.status(502).json({ error: '人資系統的員工名單暫時拿不到,請稍後再試' });
+    }
+    // 只回有 cloud_access != 'none' (含 viewer/editor/admin/owner) 的員工(不回 ver:瀏覽器用不到)
     const filtered = rows.filter((e) =>
       e.cloud_access && e.cloud_access !== 'none' && VALID_CLOUD_ACCESS.has(e.cloud_access)
     ).map((e) => ({
@@ -195,10 +241,8 @@ router.get('/employees-roster', asyncHandler(async (req, res) => {
     res.json({ employees: filtered });
   } catch (e) {
     clearTimeout(timer);
-    if (e.name === 'AbortError') {
-      return res.status(504).json({ error: 'HR upstream timeout' });
-    }
-    res.status(502).json({ error: 'HR upstream unreachable: ' + e.message });
+    console.warn('[auth] 拿 HR 名單失敗:', e.message);
+    res.status(e.name === 'AbortError' ? 504 : 502).json({ error: '人資系統連不上,員工名單暫時拿不到,請稍後再試' });
   }
 }));
 
@@ -214,7 +258,7 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
     [req.user.id]
   );
   if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'user not found' });
+    return res.status(404).json({ error: '找不到這個帳號,請重新登入' });
   }
   res.json({ user: result.rows[0] });
 }));
@@ -236,3 +280,4 @@ router.post('/change-password', (_req, res) => {
 });
 
 module.exports = router;
+module.exports._internals = { retryAfterSec, cleanDeviceId };
