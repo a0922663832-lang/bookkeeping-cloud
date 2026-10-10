@@ -73,39 +73,79 @@ function verifySignedGet(req) {
 
 // ── 使用者端 ─────────────────────────────────────────────────────────
 
+// 補推被領走(picked)超過這麼久還沒回報 → 當作現場沒做成,放回佇列讓人能再按(Y34)
+const PICKED_TIMEOUT_MINUTES = 30;
+
+async function releaseStalePicked() {
+  await query(
+    `UPDATE repush_requests SET status = 'requested', picked_at = NULL
+      WHERE status = 'picked' AND picked_at < NOW() - ($1::int * INTERVAL '1 minute')`,
+    [PICKED_TIMEOUT_MINUTES]
+  );
+}
+
+// 對帳只接現場系統那一本帳(Y35)
+function isReconBook(code) {
+  const hrBook = String(process.env.HR_DEFAULT_BOOK_CODE || 'NEST0001').toUpperCase();
+  return code === hrBook || code === String(recon.RECON_BOOK_CODE || '').toUpperCase();
+}
+
 router.get('/B/:bookCode/reconciliation', requireAuth, loadAuth, asyncHandler(async (req, res) => {
   const date = String(req.query.date || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date required (YYYY-MM-DD)' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '請給日期（年-月-日）' });
+  const includeStale = req.query.include_stale === '1' || req.query.include_stale === 'true';
+
+  await releaseStalePicked();
 
   const r = await query(
     `SELECT external_source, external_id, event_type, leo_amount, leo_status,
             cloud_status, bucket, detail, run_at
        FROM recon_results
-      WHERE book_id = $1 AND recon_date = $2::date
+      WHERE book_id = $1 AND recon_date = $2::date AND external_source <> '_run'
+        AND ($3::boolean OR cloud_status <> 'stale')
       ORDER BY bucket, external_source, external_id`,
-    [req.book.id, date]
+    [req.book.id, date, includeStale]
   );
+
+  // 補推請求現況（讓 UI 顯示「補推中」）
+  const open = await query(
+    `SELECT external_id, status, requested_at, picked_at FROM repush_requests
+      WHERE book_id = $1 AND status IN ('requested', 'picked')`,
+    [req.book.id]
+  );
+  const openIds = new Set(open.rows.map(o => o.external_id));
 
   const grouped = { settled: [], in_transit: [], diff: [] };
   let lastRunAt = null;
+  let staleCount = 0;
   for (const row of r.rows) {
+    if (row.cloud_status === 'stale') { staleCount++; }
+    // can_repush:真的是「現場已送出但帳本沒有 / 推送失敗」才給補送,而且沒有進行中的補送
+    row.can_repush = !openIds.has(row.external_id) && row.cloud_status !== 'stale'
+      && typeof row.detail === 'string' && row.detail.includes('可補推');
     grouped[row.bucket].push(row);
     if (!lastRunAt || row.run_at > lastRunAt) lastRunAt = row.run_at;
   }
 
-  // 補推請求現況（讓 UI 顯示「補推中」）
-  const open = await query(
-    `SELECT external_id, status FROM repush_requests
-      WHERE book_id = $1 AND status IN ('requested', 'picked')`,
-    [req.book.id]
+  // 這天有沒有真的跑過(Y32):有結果列、或有「跑成」紀錄 → ran;只有「沒跑成」紀錄 → 沒跑
+  const runRow = await query(
+    `SELECT cloud_status, detail, run_at FROM recon_results
+      WHERE book_id = $1 AND recon_date = $2::date AND external_source = '_run' AND external_id = 'daily'`,
+    [req.book.id, date]
   );
+  const lastRun = runRow.rows[0] || null;
+  const ran = r.rows.length > 0 || (lastRun !== null && lastRun.cloud_status === 'ok');
+  if (lastRun && (!lastRunAt || lastRun.run_at > lastRunAt)) lastRunAt = lastRun.run_at;
+  const failed = lastRun !== null && lastRun.cloud_status === 'failed';
 
   res.json({
     date,
+    ran: failed ? false : ran,
+    run_error: failed ? '對帳沒跑成，會在下一次自動重試（也可以按「立刻重新對帳」）' : null,
     last_run_at: lastRunAt,
-    counts: { settled: grouped.settled.length, in_transit: grouped.in_transit.length, diff: grouped.diff.length },
+    counts: { settled: grouped.settled.length - staleCount, in_transit: grouped.in_transit.length, diff: grouped.diff.length },
     results: grouped,
-    open_repush: open.rows,
+    open_repush: open.rows.map(o => ({ ...o, can_repush: false })),
   });
 }));
 
@@ -113,12 +153,16 @@ router.post('/B/:bookCode/reconciliation/run',
   requireAuth, loadAuth, requireRole('owner', 'admin', 'editor'),
   asyncHandler(async (req, res) => {
     const date = String((req.body || {}).date || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date required (YYYY-MM-DD)' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '請給日期（年-月-日）' });
+    if (!isReconBook(req.book.code)) {
+      return res.status(400).json({ error: '這個帳本沒有接現場系統' });
+    }
     try {
       const counts = await recon.runFor(req.book.code, date);
-      res.json({ ok: true, date, counts });
+      res.json({ ok: true, ran: true, date, counts });
     } catch (e) {
-      res.status(502).json({ error: `對帳失敗：${e.message}（LEO 端可能離線）` });
+      console.error('[recon] manual run failed:', e.message);
+      res.status(502).json({ ran: false, error: '對帳沒跑成，會在下一次自動重試（現場系統可能連不上）' });
     }
   }));
 
@@ -127,7 +171,7 @@ router.post('/B/:bookCode/reconciliation/repush',
   asyncHandler(async (req, res) => {
     const { external_source, external_id } = req.body || {};
     if (!external_source || !external_id) {
-      return res.status(400).json({ error: 'external_source and external_id required' });
+      return res.status(400).json({ error: '缺少要補送的單據資料' });
     }
     try {
       const r = await query(
@@ -135,7 +179,7 @@ router.post('/B/:bookCode/reconciliation/repush',
          VALUES ($1, $2, $3, $4) RETURNING id`,
         [req.book.id, external_source, external_id, req.user.id]
       );
-      res.json({ ok: true, repush_id: r.rows[0].id, note: 'LEO 端每 5 分鐘領取執行' });
+      res.json({ ok: true, repush_id: r.rows[0].id, note: '現場系統每 5 分鐘領取執行' });
     } catch (e) {
       if (e.code === '23505') return res.status(409).json({ error: '這筆已經在補推佇列中了' });
       throw e;
@@ -152,6 +196,7 @@ router.get('/internal/v1/repush-queue', asyncHandler(async (req, res) => {
   const bookRes = await query(`SELECT id FROM books WHERE code = $1 AND is_active = TRUE`, [code]);
   if (bookRes.rows.length === 0) return res.status(404).json({ error: 'book not found' });
 
+  await releaseStalePicked();   // 領走超過 30 分鐘沒回報的,先放回佇列,這次一起重新領
   const picked = await query(
     `UPDATE repush_requests SET status = 'picked', picked_at = NOW()
       WHERE id IN (
@@ -235,11 +280,20 @@ router.post('/internal/v1/repush-ack', asyncHandler(async (req, res) => {
     `UPDATE repush_requests
         SET status = $1, done_at = NOW(), result_note = $2
       WHERE id = $3 AND status = 'picked'
-      RETURNING id`,
+      RETURNING id, book_id, external_source, external_id`,
     [ok ? 'done' : 'failed', String(note || '').slice(0, 500), id]
   );
   if (r.rows.length === 0) return res.status(404).json({ error: 'repush request not found or not picked' });
+
   res.json({ ok: true });
+
+  // 補推成功 → 回完 ack 之後,立刻在背景把這一筆重驗,不用等明天的排程。
+  // 重驗失敗只記 log,不影響 ack(現場端是在等這個回應)。
+  if (ok) {
+    const row = r.rows[0];
+    recon.reverifyEvent(row.book_id, row.external_source, row.external_id)
+      .catch((e) => console.warn(`[recon] 補推後重驗失敗 ${row.external_id}:`, e.message));
+  }
 }));
 
 module.exports = router;
