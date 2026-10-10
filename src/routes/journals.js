@@ -12,19 +12,29 @@ const { query, withTransaction } = require('../db');
 const { requireAuth } = require('../auth');
 const bookCode = require('../utils/bookCode');
 const asyncHandler = require('../utils/asyncHandler');
+const { helpers: postingHelpers } = require('./posting');
+
+const { reverseJournalRow, httpError, isRealDate, taipeiToday } = postingHelpers;
 
 const router = express.Router();
 
-// auth required EXCEPT /internal/* (webhook endpoints use X-Posting-Token instead)
+// auth required EXCEPT /internal/*(webhook / 對帳端點用簽章,不用登入)
+// B9:用路徑開頭判斷,不用 req.url.includes(query string 帶 /internal/ 會被當成免登入)。
+//   注意對帳的 /internal/v1/* 不在 /B/ 底下,兩種都要放行。
+function isInternalPath(p) {
+  return typeof p === 'string' && (p.startsWith('/internal/') || /^\/B\/[^/]+\/internal\//.test(p));
+}
 router.use((req, res, next) => {
-  if (req.url.includes('/internal/')) return next();
+  if (isInternalPath(req.path)) return next();
   return requireAuth(req, res, next);
 });
+
+const SUMMARY_MAX = 200;
 
 async function loadBookMiddleware(req, res, next) {
   const code = (req.params.bookCode || '').toUpperCase();
   if (!bookCode.isValidFormat(code)) {
-    return res.status(400).json({ error: 'invalid book code format' });
+    return res.status(400).json({ error: '帳本代碼格式不對' });
   }
   const result = await query(
     `SELECT b.id, b.code, bm.role
@@ -34,7 +44,7 @@ async function loadBookMiddleware(req, res, next) {
     [code, req.user.id]
   );
   if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'book not found or no access' });
+    return res.status(404).json({ error: '找不到這個帳本,或你沒有這個帳本的權限' });
   }
   req.book = { id: result.rows[0].id, code: result.rows[0].code };
   req.bookMember = { role: result.rows[0].role };
@@ -44,10 +54,18 @@ async function loadBookMiddleware(req, res, next) {
 function requireBookRole(...roles) {
   return (req, res, next) => {
     if (!req.bookMember || !roles.includes(req.bookMember.role)) {
-      return res.status(403).json({ error: `forbidden, requires role: ${roles.join(' or ')}` });
+      return res.status(403).json({ error: '你的角色不能做這個' });
     }
     next();
   };
+}
+
+// §3.4 沖銷權限:只有 owner / admin
+function requireReverseRole(req, res, next) {
+  if (!req.bookMember || !['owner', 'admin'].includes(req.bookMember.role)) {
+    return res.status(403).json({ error: '只有老闆或管理員能沖銷' });
+  }
+  next();
 }
 
 const loadBook = asyncHandler(loadBookMiddleware);
@@ -122,8 +140,8 @@ function normalizeReclassifyTargets(b, bookId) {
   let targets = b.targets;
   if (!targets || !Array.isArray(targets)) {
     // 沒給 targets array → 走 legacy 1:1
-    if (!b.subject_id) throw Object.assign(new Error('subject_id required'), { status: 400 });
-    if (!(Number(b.amount) > 0)) throw Object.assign(new Error('amount must be > 0'), { status: 400 });
+    if (!b.subject_id) throw Object.assign(new Error('請選科目'), { status: 400 });
+    if (!(Number(b.amount) > 0)) throw Object.assign(new Error('金額必須是大於 0 的整數(元)'), { status: 400 });
     return {
       primarySubjectId: Number(b.subject_id),
       totalAmount: Number(b.amount),
@@ -131,16 +149,16 @@ function normalizeReclassifyTargets(b, bookId) {
     };
   }
   if (targets.length === 0) {
-    throw Object.assign(new Error('targets array cannot be empty'), { status: 400 });
+    throw Object.assign(new Error('至少要有一個轉入科目'), { status: 400 });
   }
   // Validate each
   const norm = [];
   let total = 0;
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i];
-    if (!t || !t.subject_id) throw Object.assign(new Error(`targets[${i}].subject_id required`), { status: 400 });
+    if (!t || !t.subject_id) throw Object.assign(new Error(`第 ${i + 1} 個轉入科目沒選`), { status: 400 });
     const amt = Number(t.amount);
-    if (!(amt > 0)) throw Object.assign(new Error(`targets[${i}].amount must be > 0`), { status: 400 });
+    if (!(amt > 0)) throw Object.assign(new Error(`第 ${i + 1} 個轉入金額必須是大於 0 的整數(元)`), { status: 400 });
     norm.push({
       target_subject_id: Number(t.subject_id),
       amount: amt,
@@ -152,7 +170,7 @@ function normalizeReclassifyTargets(b, bookId) {
   const seen = new Set();
   for (const t of norm) {
     if (seen.has(t.target_subject_id)) {
-      throw Object.assign(new Error(`target subject_id ${t.target_subject_id} duplicated`), { status: 400 });
+      throw Object.assign(new Error('同一個科目重複出現在轉入清單'), { status: 400 });
     }
     seen.add(t.target_subject_id);
   }
@@ -160,7 +178,7 @@ function normalizeReclassifyTargets(b, bookId) {
   if (b.amount !== undefined && b.amount !== null) {
     const declared = Number(b.amount);
     if (Math.abs(declared - total) > 0.02) {
-      throw Object.assign(new Error(`amount mismatch: declared ${declared}, sum of targets ${total}`), { status: 400 });
+      throw Object.assign(new Error(`總金額 ${declared} 跟各科目加總 ${total} 對不上`), { status: 400 });
     }
   }
   if (norm.length === 1) {
@@ -200,7 +218,7 @@ async function validateFKs(client, bookId, opts) {
       [uniqSubjects, bookId]
     );
     if (r.rows[0].c !== uniqSubjects.length) {
-      throw Object.assign(new Error('one or more subject_id not in this book'), { status: 400 });
+      throw Object.assign(new Error('有科目不屬於這本帳'), { status: 400 });
     }
   }
   if (accountIds.length) {
@@ -210,7 +228,7 @@ async function validateFKs(client, bookId, opts) {
       [uniqAccounts, bookId]
     );
     if (r.rows[0].c !== uniqAccounts.length) {
-      throw Object.assign(new Error('one or more account_id not in this book'), { status: 400 });
+      throw Object.assign(new Error('有帳戶不屬於這本帳'), { status: 400 });
     }
   }
   if (counterpartyId) {
@@ -219,7 +237,7 @@ async function validateFKs(client, bookId, opts) {
       [counterpartyId, bookId]
     );
     if (r.rows.length === 0) {
-      throw Object.assign(new Error('counterparty_id not in this book'), { status: 400 });
+      throw Object.assign(new Error('往來對象不屬於這本帳'), { status: 400 });
     }
   }
 }
@@ -271,11 +289,14 @@ router.post(
     const outAccountId = b.transfer_out_account_id || null;
     const inAccountId = b.transfer_in_account_id || null;
 
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ error: 'date required (YYYY-MM-DD)' });
+    if (!isRealDate(date)) {
+      return res.status(400).json({ error: '日期不正確' });
     }
     if (!['expense', 'income', 'transfer', 'reclassify'].includes(type)) {
-      return res.status(400).json({ error: 'type must be expense / income / transfer / reclassify' });
+      return res.status(400).json({ error: '單據類型不正確' });
+    }
+    if (b.summary !== undefined && b.summary !== null && String(b.summary).length > SUMMARY_MAX) {
+      return res.status(400).json({ error: `摘要太長(最多 ${SUMMARY_MAX} 字)` });
     }
 
     // ── Resolve (subject_id, amount, targets) by type ──────────────
@@ -286,35 +307,35 @@ router.post(
       amount = r.totalAmount;
       normalizedTargets = r.normalizedTargets;
       if (!reclassifyFromSubjectId) {
-        return res.status(400).json({ error: 'reclassify_from_subject_id required for reclassify' });
+        return res.status(400).json({ error: '分類轉移要選原科目' });
       }
       if (outAccountId || inAccountId) {
-        return res.status(400).json({ error: 'transfer accounts must be null for reclassify' });
+        return res.status(400).json({ error: '分類轉移不能選帳戶' });
       }
       // Check from != any target
       const allTargets = normalizedTargets.length > 0
         ? normalizedTargets.map((t) => t.target_subject_id)
         : [subjectId];
       if (allTargets.includes(Number(reclassifyFromSubjectId))) {
-        return res.status(400).json({ error: 'reclassify_from_subject_id must differ from every target subject_id' });
+        return res.status(400).json({ error: '原科目不能跟轉入科目相同' });
       }
     } else {
       subjectId = Number(b.subject_id);
       amount = Number(b.amount);
-      if (!subjectId) return res.status(400).json({ error: 'subject_id required' });
-      if (!(amount > 0)) return res.status(400).json({ error: 'amount must be > 0' });
+      if (!Number.isInteger(subjectId) || subjectId < 1) return res.status(400).json({ error: '請選科目' });
+      if (!(Number.isInteger(amount) && amount > 0)) return res.status(400).json({ error: '金額必須是大於 0 的整數(元)' });
       if (type === 'expense') {
-        if (!outAccountId) return res.status(400).json({ error: 'transfer_out_account_id required for expense' });
-        if (inAccountId) return res.status(400).json({ error: 'transfer_in_account_id must be null for expense' });
-        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for expense' });
+        if (!outAccountId) return res.status(400).json({ error: '支出要選付款帳戶' });
+        if (inAccountId) return res.status(400).json({ error: '支出不能選收款帳戶' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: '支出不能選原科目' });
       } else if (type === 'income') {
-        if (!inAccountId) return res.status(400).json({ error: 'transfer_in_account_id required for income' });
-        if (outAccountId) return res.status(400).json({ error: 'transfer_out_account_id must be null for income' });
-        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for income' });
+        if (!inAccountId) return res.status(400).json({ error: '收入要選收款帳戶' });
+        if (outAccountId) return res.status(400).json({ error: '收入不能選付款帳戶' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: '收入不能選原科目' });
       } else if (type === 'transfer') {
-        if (!outAccountId || !inAccountId) return res.status(400).json({ error: 'transfer_out_account_id and transfer_in_account_id both required for transfer' });
-        if (outAccountId === inAccountId) return res.status(400).json({ error: 'transfer accounts must differ' });
-        if (reclassifyFromSubjectId) return res.status(400).json({ error: 'reclassify_from_subject_id must be null for transfer' });
+        if (!outAccountId || !inAccountId) return res.status(400).json({ error: '轉帳要選轉出與轉入帳戶' });
+        if (outAccountId === inAccountId) return res.status(400).json({ error: '轉出與轉入帳戶不能相同' });
+        if (reclassifyFromSubjectId) return res.status(400).json({ error: '轉帳不能選原科目' });
       }
     }
 
@@ -372,22 +393,31 @@ router.get('/B/:bookCode/journals', loadBook, asyncHandler(async (req, res) => {
   const where = ['j.book_id = $1'];
   const params = [req.book.id];
 
-  if (from) { where.push(`j.date >= $${params.length + 1}`); params.push(from); }
-  if (to) { where.push(`j.date <= $${params.length + 1}`); params.push(to); }
+  const isPosInt = (v) => /^\d+$/.test(String(v)) && Number(v) >= 1;
+  if (from && !isRealDate(String(from))) return res.status(400).json({ error: '開始日期不正確' });
+  if (to && !isRealDate(String(to))) return res.status(400).json({ error: '結束日期不正確' });
+  if (subject_id && !isPosInt(subject_id)) return res.status(400).json({ error: '科目篩選不正確' });
+  if (counterparty_id && !isPosInt(counterparty_id)) return res.status(400).json({ error: '往來對象篩選不正確' });
+  if (account_id && !isPosInt(account_id)) return res.status(400).json({ error: '帳戶篩選不正確' });
+
+  if (from) { where.push(`j.date >= $${params.length + 1}`); params.push(String(from)); }
+  if (to) { where.push(`j.date <= $${params.length + 1}`); params.push(String(to)); }
   if (type) {
-    if (!['expense', 'income', 'transfer', 'reclassify'].includes(type)) {
-      return res.status(400).json({ error: 'invalid type filter' });
+    if (!['expense', 'income', 'transfer', 'reclassify', 'composite'].includes(type)) {
+      return res.status(400).json({ error: '類型篩選不正確' });
     }
     where.push(`j.type = $${params.length + 1}`);
     params.push(type);
   }
   if (subject_id) {
-    // 1:N: subject_id 篩選也要查 reclassify_targets
+    // 1:N: subject_id 篩選也要查 reclassify_targets;Y8:composite 的科目腳也要找得到
     where.push(`(
       j.subject_id = $${params.length + 1}
       OR j.reclassify_from_subject_id = $${params.length + 1}
       OR EXISTS (SELECT 1 FROM journal_reclassify_targets jrt
                   WHERE jrt.journal_id = j.id AND jrt.target_subject_id = $${params.length + 1})
+      OR EXISTS (SELECT 1 FROM journal_legs jl
+                  WHERE jl.journal_log_id = j.id AND jl.subject_id = $${params.length + 1})
     )`);
     params.push(Number(subject_id));
   }
@@ -396,11 +426,17 @@ router.get('/B/:bookCode/journals', loadBook, asyncHandler(async (req, res) => {
     params.push(Number(counterparty_id));
   }
   if (account_id) {
-    where.push(`(j.transfer_out_account_id = $${params.length + 1} OR j.transfer_in_account_id = $${params.length + 1})`);
+    // Y8:composite 的帳戶腳(POS 收班、薪資、訂金退款)也要找得到
+    where.push(`(
+      j.transfer_out_account_id = $${params.length + 1}
+      OR j.transfer_in_account_id = $${params.length + 1}
+      OR EXISTS (SELECT 1 FROM journal_legs jl
+                  WHERE jl.journal_log_id = j.id AND jl.account_id = $${params.length + 1})
+    )`);
     params.push(Number(account_id));
   }
 
-  const lim = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  const lim = Math.min(Math.max(Math.floor(Number(req.query.limit)) || 100, 1), 500);
 
   const result = await query(
     `${SELECT_JOURNAL_WITH_JOINS}
@@ -421,7 +457,7 @@ router.get('/B/:bookCode/journals', loadBook, asyncHandler(async (req, res) => {
 router.get('/B/:bookCode/journals/:id', loadBook, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) {
-    return res.status(400).json({ error: 'invalid id' });
+    return res.status(400).json({ error: '記錄編號不正確' });
   }
   const result = await query(
     `${SELECT_JOURNAL_WITH_JOINS}
@@ -429,7 +465,7 @@ router.get('/B/:bookCode/journals/:id', loadBook, asyncHandler(async (req, res) 
     [req.book.id, id]
   );
   if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'journal not found' });
+    return res.status(404).json({ error: '找不到這筆記錄' });
   }
   const journal = result.rows[0];
   const targetsMap = await fetchTargetsForJournals([journal.id]);
@@ -450,11 +486,17 @@ router.patch(
   requireBookRole('owner', 'admin', 'editor'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: '記錄編號不正確' });
     const b = req.body || {};
 
     if (b.type !== undefined) {
-      return res.status(400).json({ error: 'cannot change type — use reverse + create new instead' });
+      return res.status(400).json({ error: '不能改單據類型;請先沖銷再重新記一筆' });
+    }
+    if (b.date !== undefined && !isRealDate(String(b.date))) {
+      return res.status(400).json({ error: '日期不正確' });
+    }
+    if (b.summary !== undefined && b.summary !== null && String(b.summary).length > SUMMARY_MAX) {
+      return res.status(400).json({ error: `摘要太長(最多 ${SUMMARY_MAX} 字)` });
     }
 
     const result = await withTransaction(async (client) => {
@@ -463,14 +505,44 @@ router.patch(
         [id, req.book.id]
       );
       if (origRes.rows.length === 0) {
-        throw Object.assign(new Error('journal not found'), { status: 404 });
+        throw Object.assign(new Error('找不到這筆記錄'), { status: 404 });
       }
       const o = origRes.rows[0];
       if (o.reversed_by_id) {
-        throw Object.assign(new Error(`journal #${o.id} already reversed by #${o.reversed_by_id}, cannot edit`), { status: 409 });
+        throw Object.assign(new Error('這筆已經被沖銷過了,不能再改'), { status: 409 });
       }
       if (o.reverses_id) {
-        throw Object.assign(new Error(`journal #${o.id} is itself a reverse, cannot edit`), { status: 400 });
+        throw Object.assign(new Error('沖銷單不能修改'), { status: 400 });
+      }
+
+      // Y2:複式單(POS 收班 / 薪資 / 訂金退款)只准改日期、摘要(備註也可),
+      //     金額 / 科目 / 帳戶 / 對象都在明細裡,改單頭不會動明細 → 擋。
+      if (o.is_composite) {
+        const locked = ['amount', 'subject_id', 'reclassify_from_subject_id', 'transfer_out_account_id',
+          'transfer_in_account_id', 'counterparty_id', 'targets', 'legs'];
+        if (locked.some((k) => b[k] !== undefined)) {
+          throw Object.assign(
+            new Error('這種多行明細的單只能改日期和摘要;要改金額或科目,請先沖銷,再請現場系統重新送一次'),
+            { status: 400 }
+          );
+        }
+        await client.query(
+          `UPDATE journal_logs SET
+             date = $1, summary = $2, note = $3,
+             edited_at = NOW(), edited_by_id = $4, edit_count = edit_count + 1,
+             updated_at = NOW(), updated_by = $4
+           WHERE id = $5 AND book_id = $6`,
+          [
+            b.date !== undefined ? String(b.date) : o.date,
+            b.summary !== undefined ? b.summary : o.summary,
+            b.note !== undefined ? b.note : o.note,
+            req.user.id, id, req.book.id,
+          ]
+        );
+        const fin = await client.query(`SELECT * FROM journal_logs WHERE id = $1`, [id]);
+        const j = fin.rows[0];
+        j.targets = [];
+        return j;
       }
 
       // 1. 算「新版」欄位
@@ -484,7 +556,7 @@ router.patch(
       if (newDate) {
         const d = newDate instanceof Date ? newDate.toISOString().slice(0, 10) : String(newDate);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          throw Object.assign(new Error('invalid date format'), { status: 400 });
+          throw Object.assign(new Error('日期不正確'), { status: 400 });
         }
       }
 
@@ -513,32 +585,36 @@ router.patch(
           newReclassifyFromSubjectId = b.reclassify_from_subject_id || null;
         }
         if (!newReclassifyFromSubjectId) {
-          throw Object.assign(new Error('reclassify_from_subject_id required for reclassify'), { status: 400 });
+          throw Object.assign(new Error('分類轉移要選原科目'), { status: 400 });
         }
         // from != any target
         const allTargets = newTargets && newTargets.length > 0
           ? newTargets.map((t) => t.target_subject_id)
           : [newSubjectId];
         if (allTargets.includes(Number(newReclassifyFromSubjectId))) {
-          throw Object.assign(new Error('reclassify_from_subject_id must differ from every target'), { status: 400 });
+          throw Object.assign(new Error('原科目不能跟轉入科目相同'), { status: 400 });
         }
       } else {
-        if (b.subject_id !== undefined) newSubjectId = Number(b.subject_id);
+        if (b.subject_id !== undefined) {
+          const sid = Number(b.subject_id);
+          if (!Number.isInteger(sid) || sid < 1) throw Object.assign(new Error('請選科目'), { status: 400 });
+          newSubjectId = sid;
+        }
         if (b.amount !== undefined) {
           const a = Number(b.amount);
-          if (!(a > 0)) throw Object.assign(new Error('amount must be > 0'), { status: 400 });
+          if (!(Number.isInteger(a) && a > 0)) throw Object.assign(new Error('金額必須是大於 0 的整數(元)'), { status: 400 });
           newAmount = a;
         }
         if (type === 'expense' || type === 'transfer') {
           if (b.transfer_out_account_id !== undefined) newOutAcc = b.transfer_out_account_id || null;
-          if (!newOutAcc) throw Object.assign(new Error('transfer_out_account_id required'), { status: 400 });
+          if (!newOutAcc) throw Object.assign(new Error('要選付款帳戶'), { status: 400 });
         }
         if (type === 'income' || type === 'transfer') {
           if (b.transfer_in_account_id !== undefined) newInAcc = b.transfer_in_account_id || null;
-          if (!newInAcc) throw Object.assign(new Error('transfer_in_account_id required'), { status: 400 });
+          if (!newInAcc) throw Object.assign(new Error('要選收款帳戶'), { status: 400 });
         }
-        if (type === 'transfer' && newOutAcc && newInAcc && newOutAcc === newInAcc) {
-          throw Object.assign(new Error('transfer accounts must differ'), { status: 400 });
+        if (type === 'transfer' && newOutAcc && newInAcc && Number(newOutAcc) === Number(newInAcc)) {
+          throw Object.assign(new Error('轉出與轉入帳戶不能相同'), { status: 400 });
         }
       }
 
@@ -604,272 +680,104 @@ router.patch(
   })
 );
 
-// ── DELETE /B/:bookCode/journals/:id ───────────────────────────────────
-// Soft delete via reverse: not a hard DELETE on the row. Instead create a
-// new journal_log with opposite direction (type swapped, accounts swapped,
-// reclassify subjects swapped) and link via reverses_id / reversed_by_id.
-// Account balances are auto-rolled-back. Original row stays for audit.
-//
-// 1:N reclassify reverse: child targets 翻過去成 reverse journal 的 1:1 form,
-// 但因為 reverse 是「1 origin → N targets」翻成「N origins → 1 target」,
-// 結構不對稱. 簡化處理: reverse journal 走 1:1 (用 primary),
-// 並把所有 child targets 合計成 1 個 reverse amount 用 primary 即可.
-//   → 原 reclassify 多 target 的 reverse,雖然是 1:1 形式但金額 = 原 total,
-//      reclassify_from = 原 primary target,subject_id = 原 from.
-//      語意上「全部沖回到原 from 科目」.
+// ============================================================================
+// 沖銷(§3.4,2026-10-10)
+//   POST   /B/:bookCode/journals/:id/reverse  body { reason 必填, date 可省略 } —— canonical
+//   DELETE /B/:bookCode/journals/:id          舊入口,內部轉呼叫同一套(reason 預設「畫面沖銷(舊入口)」)
+//   兩條都:只限 owner / admin、鎖原單、支援 composite 與 reclassify 1:N、寫 reverse_audit_log、
+//   回 { reversal, original }。沖銷單 date = 台北今天(或指定),original_date = 原單日期(報表歸回原月)。
+//   真正寫分錄的邏輯在 posting.js 的 reverseJournalRow(supersede 也共用)。
+// ============================================================================
+const LEGACY_DELETE_REASON = '畫面沖銷(舊入口)';
+
+async function reverseById(client, bookId, id, userId, reason, dateOverride) {
+  const origRes = await client.query(
+    `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
+    [id, bookId]
+  );
+  if (origRes.rows.length === 0) throw httpError(404, '找不到這筆記錄');
+  const o = origRes.rows[0];
+
+  // Q15 cascade 防護
+  if (o.reverses_id) throw httpError(409, '這筆本身就是沖銷單,不能再沖銷');
+  if (o.reversed_by_id) throw httpError(409, '這筆已經被沖銷過了');
+  const dupCheck = await client.query(
+    `SELECT id FROM journal_logs WHERE reverses_id = $1 LIMIT 1`,
+    [o.id]
+  );
+  if (dupCheck.rows.length > 0) throw httpError(409, '這筆已經被沖銷過了');
+
+  const summary = `[沖銷] ${o.summary || ''}`.trim().slice(0, SUMMARY_MAX);
+  const reversal = await reverseJournalRow(client, bookId, o, {
+    date: dateOverride || taipeiToday(),
+    summary,
+    note: reason,
+    userId,
+    isAuto: false,
+  });
+
+  await client.query(
+    `INSERT INTO reverse_audit_log (original_journal_id, reverse_journal_id, reversed_by_user_id, reason)
+     VALUES ($1, $2, $3, $4)`,
+    [o.id, reversal.id, userId, reason]
+  );
+
+  const after = await client.query(`SELECT * FROM journal_logs WHERE id = $1`, [o.id]);
+  return { reversal, original: after.rows[0] };
+}
+
+function readReverseInput(req, defaultReason) {
+  const b = req.body || {};
+  const rawReason = b.reason !== undefined && b.reason !== null ? String(b.reason).trim() : '';
+  const reason = (rawReason || defaultReason || '').slice(0, 500);
+  let date = null;
+  if (b.date !== undefined && b.date !== null && b.date !== '') {
+    if (!isRealDate(String(b.date))) return { error: '沖銷日期不正確' };
+    date = String(b.date);
+  }
+  if (!reason) return { error: '請寫沖銷原因' };
+  return { reason, date };
+}
+
+function sendReverseResult(res, r) {
+  res.json({
+    ok: true,
+    reversal: r.reversal,
+    original: r.original,
+    // 舊欄位(舊頁面相容)
+    original_id: r.original.id,
+    reverse_id: r.reversal.id,
+    reverse_journal: r.reversal,
+  });
+}
+
 router.delete(
   '/B/:bookCode/journals/:id',
   loadBook,
-  requireBookRole('owner', 'admin'),
+  requireReverseRole,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
-
-    const result = await withTransaction(async (client) => {
-      const origRes = await client.query(
-        `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
-        [id, req.book.id]
-      );
-      if (origRes.rows.length === 0) {
-        throw Object.assign(new Error('journal not found'), { status: 404 });
-      }
-      const o = origRes.rows[0];
-      if (o.reversed_by_id) {
-        throw Object.assign(
-          new Error(`journal #${o.id} already reversed by #${o.reversed_by_id}`),
-          { status: 409 }
-        );
-      }
-      if (o.reverses_id) {
-        throw Object.assign(
-          new Error(`journal #${o.id} is itself a reverse of #${o.reverses_id}, cannot re-reverse`),
-          { status: 400 }
-        );
-      }
-
-      let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
-      if (o.type === 'expense') {
-        reverseType = 'income';
-        outAcc = null;
-        inAcc = o.transfer_out_account_id;
-        fromSubject = null;
-        newSubjectId = o.subject_id;
-      } else if (o.type === 'income') {
-        reverseType = 'expense';
-        outAcc = o.transfer_in_account_id;
-        inAcc = null;
-        fromSubject = null;
-        newSubjectId = o.subject_id;
-      } else if (o.type === 'transfer') {
-        reverseType = 'transfer';
-        outAcc = o.transfer_in_account_id;
-        inAcc = o.transfer_out_account_id;
-        fromSubject = null;
-        newSubjectId = o.subject_id;
-      } else if (o.type === 'reclassify') {
-        // 1:N reverse 簡化: 全部沖回 origin. Reverse journal 是 1:1 form.
-        reverseType = 'reclassify';
-        outAcc = null;
-        inAcc = null;
-        fromSubject = o.subject_id;            // origin = 原 primary target
-        newSubjectId = o.reclassify_from_subject_id;  // target = 原 from
-      }
-
-      const ins = await client.query(
-        `INSERT INTO journal_logs (
-           book_id, date, type, amount,
-           subject_id, reclassify_from_subject_id,
-           transfer_out_account_id, transfer_in_account_id,
-           counterparty_id, summary, note,
-           reverses_id, created_by, updated_by
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
-         RETURNING *`,
-        [
-          req.book.id, req.body.date || o.date, reverseType, o.amount,
-          newSubjectId, fromSubject,
-          outAcc, inAcc,
-          o.counterparty_id, req.body.summary || `Reverse of #${o.id}`, req.body.note || null,
-          o.id, req.user.id,
-        ]
-      );
-      const reverse = ins.rows[0];
-
-      await applyBalanceDelta(
-        client, req.book.id, reverseType,
-        outAcc, inAcc, Number(o.amount), 'apply'
-      );
-
-      await client.query(
-        `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
-        [reverse.id, o.id]
-      );
-
-      return { original_id: o.id, reverse_journal: reverse };
-    });
-
-    res.json({ ok: true, ...result });
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: '記錄編號不正確' });
+    const input = readReverseInput(req, LEGACY_DELETE_REASON);
+    if (input.error) return res.status(400).json({ error: input.error });
+    const r = await withTransaction((client) =>
+      reverseById(client, req.book.id, id, req.user.id, input.reason, input.date));
+    sendReverseResult(res, r);
   })
 );
 
-// ============================================================================
-// POST /B/:bookCode/journals/:id/reverse  (D14 / N1 / P2 / Q11)
-// 新 canonical reverse endpoint — 強制 reason，寫 reverse_audit_log，支援 composite
-// ============================================================================
 router.post(
   '/B/:bookCode/journals/:id/reverse',
   loadBook,
-  requireBookRole('owner', 'admin'),
+  requireReverseRole,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
-    const reason = (req.body && req.body.reason && String(req.body.reason).trim()) || null;
-    if (!reason) return res.status(400).json({ error: 'reason required' });
-
-    const result = await withTransaction(async (client) => {
-      // Q11: SELECT FOR UPDATE 鎖
-      const origRes = await client.query(
-        `SELECT * FROM journal_logs WHERE id = $1 AND book_id = $2 FOR UPDATE`,
-        [id, req.book.id]
-      );
-      if (origRes.rows.length === 0) {
-        throw Object.assign(new Error('journal not found'), { status: 404 });
-      }
-      const o = origRes.rows[0];
-
-      // Q15 cascade 防護
-      if (o.reverses_id) {
-        throw Object.assign(
-          new Error(`journal #${o.id} is itself a reverse, cannot re-reverse`),
-          { status: 409 }
-        );
-      }
-      const dupCheck = await client.query(
-        `SELECT id FROM journal_logs WHERE reverses_id = $1 LIMIT 1`,
-        [o.id]
-      );
-      if (dupCheck.rows.length > 0) {
-        throw Object.assign(
-          new Error(`journal #${o.id} already reversed by #${dupCheck.rows[0].id}`),
-          { status: 409 }
-        );
-      }
-
-      const todayDate = new Date().toISOString().slice(0, 10);
-      let reverseId;
-
-      if (o.is_composite) {
-        // 1A — Composite Reverse: 複製 legs 取負
-        const legsRes = await client.query(
-          `SELECT * FROM journal_legs WHERE journal_log_id = $1 ORDER BY leg_no`,
-          [o.id]
-        );
-        const legs = legsRes.rows;
-
-        // 算 reverse header amount = sum(positive account legs after negation = sum(negative account legs of original))
-        // 簡化：直接 negate 原 amount
-        const ins = await client.query(
-          `INSERT INTO journal_logs (
-             book_id, date, type, amount,
-             subject_id,
-             summary, note,
-             reverses_id, original_date,
-             is_composite,
-             created_by, updated_by
-           ) VALUES ($1, $2, 'composite', $3, $4, $5, $6, $7, $8, TRUE, $9, $9)
-           RETURNING *`,
-          [
-            req.book.id, todayDate, Number(o.amount), o.subject_id,
-            `Reverse of #${o.id}`, reason,
-            o.id, o.date, req.user.id,
-          ]
-        );
-        const reverse = ins.rows[0];
-        reverseId = reverse.id;
-
-        // 複製 legs 取負，並回滾 ag_accounts
-        for (const leg of legs) {
-          const negAmt = -Number(leg.amount);
-          await client.query(
-            `INSERT INTO journal_legs (journal_log_id, leg_no, kind, subject_id, account_id, amount, note)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [reverse.id, leg.leg_no, leg.kind, leg.subject_id, leg.account_id, negAmt, leg.note]
-          );
-          if (leg.kind === 'account') {
-            await client.query(
-              `UPDATE ag_accounts SET current_balance = current_balance + $1, updated_at = NOW()
-                WHERE id = $2 AND book_id = $3`,
-              [negAmt, leg.account_id, req.book.id]
-            );
-          }
-        }
-      } else {
-        // 1B — Legacy Reverse: 走既有 M1 1c swap 邏輯
-        let reverseType, outAcc, inAcc, fromSubject, newSubjectId;
-        if (o.type === 'expense') {
-          reverseType = 'income';
-          outAcc = null; inAcc = o.transfer_out_account_id;
-          fromSubject = null; newSubjectId = o.subject_id;
-        } else if (o.type === 'income') {
-          reverseType = 'expense';
-          outAcc = o.transfer_in_account_id; inAcc = null;
-          fromSubject = null; newSubjectId = o.subject_id;
-        } else if (o.type === 'transfer') {
-          reverseType = 'transfer';
-          outAcc = o.transfer_in_account_id; inAcc = o.transfer_out_account_id;
-          fromSubject = null; newSubjectId = o.subject_id;
-        } else if (o.type === 'reclassify') {
-          reverseType = 'reclassify';
-          outAcc = null; inAcc = null;
-          fromSubject = o.subject_id;
-          newSubjectId = o.reclassify_from_subject_id;
-        } else {
-          throw Object.assign(new Error(`unsupported type for reverse: ${o.type}`), { status: 400 });
-        }
-
-        const ins = await client.query(
-          `INSERT INTO journal_logs (
-             book_id, date, type, amount,
-             subject_id, reclassify_from_subject_id,
-             transfer_out_account_id, transfer_in_account_id,
-             counterparty_id, summary, note,
-             reverses_id, original_date,
-             created_by, updated_by
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
-           RETURNING *`,
-          [
-            req.book.id, todayDate, reverseType, o.amount,
-            newSubjectId, fromSubject,
-            outAcc, inAcc,
-            o.counterparty_id, `Reverse of #${o.id}`, reason,
-            o.id, o.date, req.user.id,
-          ]
-        );
-        const reverse = ins.rows[0];
-        reverseId = reverse.id;
-
-        await applyBalanceDelta(
-          client, req.book.id, reverseType,
-          outAcc, inAcc, Number(o.amount), 'apply'
-        );
-      }
-
-      // 雙向標記
-      await client.query(
-        `UPDATE journal_logs SET reversed_by_id = $1, updated_at = NOW() WHERE id = $2`,
-        [reverseId, o.id]
-      );
-
-      // 寫 reverse_audit_log
-      await client.query(
-        `INSERT INTO reverse_audit_log (original_journal_id, reverse_journal_id, reversed_by_user_id, reason)
-         VALUES ($1, $2, $3, $4)`,
-        [o.id, reverseId, req.user.id, reason]
-      );
-
-      return { original_id: o.id, reverse_id: reverseId };
-    });
-
-    res.json({ ok: true, ...result });
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: '記錄編號不正確' });
+    const input = readReverseInput(req, null);
+    if (input.error) return res.status(400).json({ error: input.error });
+    const r = await withTransaction((client) =>
+      reverseById(client, req.book.id, id, req.user.id, input.reason, input.date));
+    sendReverseResult(res, r);
   })
 );
 
@@ -878,12 +786,12 @@ router.post(
 // ============================================================================
 router.get('/B/:bookCode/journals/:id/legs', loadBook, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: '記錄編號不正確' });
   const jr = await query(
     `SELECT id, is_composite, type, date FROM journal_logs WHERE id = $1 AND book_id = $2`,
     [id, req.book.id]
   );
-  if (jr.rows.length === 0) return res.status(404).json({ error: 'journal not found' });
+  if (jr.rows.length === 0) return res.status(404).json({ error: '找不到這筆記錄' });
 
   const legsRes = await query(
     `SELECT l.*, s.code AS subject_code, s.name AS subject_name, a.name AS account_name
@@ -902,7 +810,7 @@ router.get('/B/:bookCode/journals/:id/legs', loadBook, asyncHandler(async (req, 
 // ============================================================================
 router.get('/B/:bookCode/journals/:id/history', loadBook, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid id' });
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: '記錄編號不正確' });
 
   const jr = await query(
     `SELECT j.*, cu.name AS created_by_name
@@ -911,7 +819,7 @@ router.get('/B/:bookCode/journals/:id/history', loadBook, asyncHandler(async (re
       WHERE j.id = $1 AND j.book_id = $2`,
     [id, req.book.id]
   );
-  if (jr.rows.length === 0) return res.status(404).json({ error: 'journal not found' });
+  if (jr.rows.length === 0) return res.status(404).json({ error: '找不到這筆記錄' });
   const j = jr.rows[0];
 
   const events = [];
