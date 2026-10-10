@@ -504,7 +504,8 @@ async function reverseJournalRow(client, bookId, o, opts) {
     }
     if (o.type === 'reclassify' && targets.length > 0) {
       // 1:N → composite 反向(只有科目腳,不動帳戶餘額)
-      reverse = await insertCompositeReverseHeader(client, bookId, o, o.reclassify_from_subject_id, opts);
+      // 不抄往來對象:原重分類單不進對象報表,沖銷單若帶對象會被複式那段算進去 → 對象報表不歸零(驗收 B 抓到)
+      reverse = await insertCompositeReverseHeader(client, bookId, { ...o, counterparty_id: null }, o.reclassify_from_subject_id, opts);
       let legNo = 0;
       await client.query(
         `INSERT INTO journal_legs (journal_log_id, leg_no, kind, subject_id, account_id, amount, note)
