@@ -2,6 +2,8 @@
 # bookkeeping-cloud 端到端 smoke test
 # Usage: bash smoke_test.sh
 # 跑完印 PASS / FAIL 各幾條
+# ⚠ 0.15.0 起:黃金案例 A–G、批次核准、作廢 409、簽章推送請跑 scripts/smoke_golden.js(在雲端容器裡跑、只打 NEST0099、會自清)。
+#   本檔 T24/T27 的 /internal/posting 沒簽章,B1 之後會被拒(預期 FAIL);T9–T14、T19、T20 會寫 NEST0001,正式帳本別跑。
 
 set +e
 BASE="http://10.0.1.168:3001"
@@ -45,7 +47,7 @@ R=$(curl -s -m 10 -X POST -H 'Content-Type: application/json' \
 echo "$R" | grep -q "PIN" && ok "T4 wrong PIN → 401" || ng "T4 wrong PIN" "$R"
 
 # T5: each HTML page → 200
-for page in dashboard pending journals reports setup settings; do
+for page in dashboard pending journals reports setup settings reconcile; do
   CODE=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "$BASE/$page")
   [ "$CODE" = "200" ] && ok "T5 GET /$page → 200" || ng "T5 GET /$page" "HTTP $CODE"
 done
@@ -104,7 +106,7 @@ TGT_AMT=$(echo "$R" | python3 -c "import sys,json; ts=json.load(sys.stdin).get('
 
 # T13: DELETE (reverse) the expense
 R=$(curl -s -m 10 -X DELETE -H "$AUTH" "$BASE/B/NEST0001/journals/$JID")
-RID=$(echo "$R" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reverse_journal',{}).get('id',''))" 2>/dev/null)
+RID=$(echo "$R" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reversal',{}).get('id',''))" 2>/dev/null)
 if [ -n "$RID" ]; then ok "T13 DELETE journal → reverse_id=$RID"; else ng "T13 DELETE journal" "$R"; fi
 
 # T14: DELETE (reverse) the reclassify
@@ -239,7 +241,7 @@ echo "$R" | grep -q "already_posted" && ok "T27 idempotency 重推回 already_po
 # T28: reverse 該 composite journal
 RES=$(curl -s -m 5 -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"reason":"smoke test reverse"}' "$BASE/B/$STAGING_BOOK/journals/$JID/reverse")
-REV_ID=$(echo "$RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reverse_id',''))" 2>/dev/null)
+REV_ID=$(echo "$RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reversal',{}).get('id',''))" 2>/dev/null)
 if [ -n "$REV_ID" ]; then ok "T28 composite reverse → reverse_id=$REV_ID" ; else ng "T28 reverse" "$RES"; fi
 
 # T29: 嘗試再 reverse 已被 reversed 的 → 409
