@@ -21,9 +21,14 @@ const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-// auth required EXCEPT /internal/* (webhook endpoints use X-Posting-Token instead)
+// auth required EXCEPT /internal/*(webhook / 對帳端點用簽章,不用登入)
+// B9:用路徑開頭判斷,不用 req.url.includes(query string 帶 /internal/ 會被當成免登入)。
+//   注意對帳的 /internal/v1/* 不在 /B/ 底下,兩種都要放行。
+function isInternalPath(p) {
+  return typeof p === 'string' && (p.startsWith('/internal/') || /^\/B\/[^/]+\/internal\//.test(p));
+}
 router.use((req, res, next) => {
-  if (req.url.includes('/internal/')) return next();
+  if (isInternalPath(req.path)) return next();
   return requireAuth(req, res, next);
 });
 

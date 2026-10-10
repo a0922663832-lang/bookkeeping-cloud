@@ -22,7 +22,7 @@ services:
       LINE_NOTIFY_TOKEN: ${LINE_NOTIFY_TOKEN:-}
       LINE_NOTIFY_TOKEN_STAGING: ${LINE_NOTIFY_TOKEN_STAGING:-}
       # Phase 0 對帳中心：雲端要主動簽名打 LEO 端點，secret 必須傳進 container
-      # （沒設時收推送是 dev-mode 放行 — 上線後務必在 .env 設值）
+      # （沒設時:NODE_ENV=production 拒絕啟動;其他環境一律拒收推送,除非 HMAC_ALLOW_UNSIGNED=1）
       WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-}
       # 對帳差異手機通知（ntfy topic 完整網址，可不設 → 只記 log）
       NTFY_URL: ${NTFY_URL:-}

@@ -1,6 +1,6 @@
 {
   "name": "bookkeeping-cloud",
-  "version": "0.1.0",
+  "version": "0.15.0",
   "description": "Bookkeeping cloud for SME / restaurant industry (multi-tenant)",
   "main": "src/server.js",
   "scripts": {

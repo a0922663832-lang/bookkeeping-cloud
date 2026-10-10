@@ -2,7 +2,9 @@
 
 公司記帳雲系統 — 中小企業 / 餐飲服務業多租戶記帳平台。
 
-規格書見 `../Money/公司記帳雲系統_軟體規格書_v1.7.md`。
+規格書見主 repo `docs/money/公司記帳雲系統_軟體規格書_v1.7.md`;單一入口 `docs/money/記帳雲_總計畫.md`。
+
+目前版本 **0.15.0**(2026-10-10 施工計畫 `docs/記帳雲_施工計畫_2026-10-10.md`)。
 
 ## 快速啟動
 
@@ -23,10 +25,16 @@ curl http://localhost:3001/health
 預期回應：
 
 ```json
-{ "status": "ok", "db": "connected", "redis": "connected", "version": "0.2.0" }
+{ "status": "ok", "db": "connected", "redis": "connected", "version": "0.15.0" }
 ```
 
-## 預設帳號（首次啟動自動建立）
+## 登入方式
+
+日常登入走 **HR SSO**:登入頁下拉選員工 + 打 HR 的 PIN,雲端代打主 repo `/api/auth/login`;
+帳本角色由 HR `/attendance` 的「記帳雲權限」決定(每次檢查都會跟 HR 名單同步,降級立即生效)。
+HR 連不上時沿用最後一份名單 10 分鐘,超過就擋。
+
+## 預設帳號（首次啟動自動建立,僅 LEGACY_EMAIL_LOGIN 緊急用）
 
 - Email: `a0922663832@gmail.com`
 - 密碼: `.env` 內 `INITIAL_ADMIN_PASSWORD`（預設 `changeme`，請登入後立刻用 `/auth/change-password` 改掉）
@@ -80,20 +88,21 @@ curl -X POST http://localhost:3001/books `
 
 | 方法 | 路徑 | 說明 | 權限 |
 |---|---|---|---|
-| GET | `/` | API 列表 | 公開 |
-| GET | `/health` | 健康檢查 | 公開 |
-| POST | `/auth/register` | 註冊新帳號 | 公開 |
+| GET | `/` | 登入頁 | 公開 |
+| GET | `/api-info` | API 列表(機器讀) | 公開 |
+| GET | `/health` | 健康檢查(含 `alerts`:手機通知有沒有接) | 公開 |
+| POST | `/auth/register` | **410 停用**(帳號全由 HR 管) | — |
 | POST | `/auth/login` | 登入拿 JWT | 公開 |
 | GET | `/auth/me` | 當前 user 資訊 | 已登入 |
-| POST | `/auth/change-password` | 改密碼 | 已登入 |
+| POST | `/auth/change-password` | **410 停用**(改 PIN 回 HR /attendance) | — |
 | GET | `/books` | 列我能進的帳本 | 已登入 |
-| POST | `/books` | 建新帳本（自動成為 owner） | 已登入 |
+| POST | `/books` | 建新帳本(自動成為 owner、補預設科目帳戶) | NEST0001 的 owner |
 | GET | `/B/:bookCode` | 帳本詳情 | 該帳本成員 |
 | PATCH | `/B/:bookCode` | 改帳本資料 | owner / admin |
 | GET | `/B/:bookCode/members` | 列成員 | 該帳本成員 |
-| POST | `/B/:bookCode/members` | 加成員 | owner / admin |
-| PATCH | `/B/:bookCode/members/:userId` | 改角色 | owner |
-| DELETE | `/B/:bookCode/members/:userId` | 移除成員 | owner |
+| POST/PATCH/DELETE | `/B/:bookCode/members…` | **410 停用**(成員由 HR 記帳雲權限同步) | — |
+
+記帳、待審、報表、對帳等其餘端點見 `GET /api-info`。
 
 ## 角色
 
@@ -101,7 +110,7 @@ curl -X POST http://localhost:3001/books `
 
 - `owner`：擁有者，唯一能加 / 移除成員、改角色（建帳本者自動成為）
 - `admin`：管理員，可改帳本資料、加成員（不能改角色）
-- `editor`：編輯者，可記帳（M1 才會用到）
+- `editor`：記帳員，可記帳、可核准 / 退回待審(LEO 2026-10-10 拍板);**不能沖銷**
 - `viewer`：檢視者，只能看不能改
 
 ## 技術棧
@@ -118,24 +127,21 @@ curl -X POST http://localhost:3001/books `
 - [x] M0 階段 3 — deploy 到 10.0.1.168 + deploy.ps1 自動化 + production JWT secret（HTTPS 留販售前再做）
 - [x] M1 — 核心引擎（ag_accounts / subjects / counterparties / journal_logs + CRUD）
 - [x] M2 — 報表 / 儀表板（dashboard / monthly / yearly / counterparties）
-- [ ] M3 — webhook 接收 + Pending Review
-- [ ] M4 — 進貨系統 v2 升級對接
-- [ ] M5 — POS 對接
-- [ ] M6 — INLINE 訂金對接
-- [ ] M7 — HR 薪資對接
-- [ ] M8 — 電子發票 / 第三方支付擴充
+- 之後的進度(待審、POS / 訂金 / 支出 / 薪資對接、對帳中心)以主 repo `docs/money/記帳雲_總計畫.md` 為準,這裡不再重複維護。
 
 ---
 
 ## Deploy
 
-每次本機改完 code，跑：
+**只有 LEO 說「推上去」才部署。** 一律用:
 
 ```powershell
-.\deploy.ps1
+.\deploy.ps1 -All
 ```
 
-會自動 scp 自 HEAD 之後改過的檔案 + restart container + 跑 /health。Force 同步用 `.\deploy.ps1 -All`。
+scp 全部 tracked 檔 + `docker restart` + 跑 /health。⚠ `docker restart` **不重讀 `.env`、不重跑 npm install**;
+改 `.env` 或 `package.json` 依賴要 `docker compose up -d --build app`(在 `/root/bookkeeping-cloud`)。
+migration 在 app 啟動時自動跑(`src/migrate.js`),失敗 = app 起不來。
 
 ## Production 部署
 
@@ -148,11 +154,12 @@ $jwt = -join ((1..64) | ForEach-Object { "0123456789abcdef"[(Get-Random -Maximum
 $envContent = "POSTGRES_PASSWORD=nestpass`nJWT_SECRET=$jwt`nINITIAL_ADMIN_PASSWORD=changeme`nNODE_ENV=development"
 $envContent | Out-File -FilePath "$env:TEMP\bk-env" -Encoding ASCII -NoNewline
 scp "$env:TEMP\bk-env" "nester@10.0.1.168:/root/bookkeeping-cloud/.env"
-ssh nester@10.0.1.168 "docker restart bookkeeping-cloud-app"
+ssh nester@10.0.1.168 "cd /root/bookkeeping-cloud && docker compose up -d app"
 Remove-Item "$env:TEMP\bk-env"
 ```
 
 注意：改 JWT_SECRET 會讓所有既有 login token 失效，要重新登入。
+⚠ 上面是示意;**簽章密鑰(WEBHOOK_HMAC_SECRET)輪替請用主 repo `scripts/rotate_bookkeeping_hmac.ps1`**,機密不要貼進對話或 commit。
 
 POSTGRES_PASSWORD 改較複雜（要同步改 PG 內的 user password），內網自家用先保留 nestpass，販售前再嚴密化。
 
