@@ -53,6 +53,10 @@ const POSTING_ACCOUNTS = {
   '彰化品圓': 'POS 收班(匯款 / 刷卡)',
   'INLINE 訂金待撥': 'INLINE 訂金',
   '應付勞健保': '薪資',
+  // 2026-10-11 考勤包 5 的三個新負債科目。改名要兩邊同步:主 repo PAYROLL_*_REF(cloudBookkeepingClient.js)↔ 這張表。
+  '應付代扣稅款': '薪資(代扣稅)',
+  '應付勞退自提': '薪資(員工勞退自提)',
+  '其他應付款—員工': '薪資(借支 / 伙食等其他扣款)',
 };
 const POSTING_ACCOUNT_PREFIXES = { '應付帳款-': '進貨(廠商應付帳款)' };
 const POSTING_SUBJECTS = {
