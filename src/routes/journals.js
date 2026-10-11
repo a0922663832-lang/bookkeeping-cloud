@@ -14,7 +14,10 @@ const bookCode = require('../utils/bookCode');
 const asyncHandler = require('../utils/asyncHandler');
 const { helpers: postingHelpers } = require('./posting');
 
-const { reverseJournalRow, httpError, isRealDate, taipeiToday } = postingHelpers;
+const {
+  reverseJournalRow, reverseDatesFor, httpError, isRealDate,
+  toYmd, loadClosedThrough, assertNotClosed,
+} = postingHelpers;
 
 const router = express.Router();
 
@@ -264,6 +267,90 @@ async function applyBalanceDelta(client, bookId, type, outAcc, inAcc, amount, di
   }
 }
 
+// ── 手動記帳冪等(第二輪 §4.7 / Y54)──────────────────────────────────
+// 平板網路閃一下、回應沒收到 → 使用者重按「記一筆」就多一筆。前端每張表單帶一個 client_request_id,
+// 同一張表單重送用同一個。後端記憶體 Map(單一 app container,不用 Redis):
+//   key = bookId:userId:client_request_id → { at, journalId | promise }
+//   10 分鐘過期、最多 1000 筆(滿了丟最舊的)。沒帶 client_request_id 照舊(不強制)。
+// 競態:第一次還在寫、第二次就進來 → 第一次在開始寫入前就先「佔位」(存一個還沒完成的 promise),
+//   第二次看到佔位就等它:成功 → 回同一筆(200 + idempotent:true);失敗 → 佔位已拿掉,第二次自己重做一次。
+const IDEM_TTL_MS = 10 * 60 * 1000;
+const IDEM_MAX = 1000;
+const idemMap = new Map();
+
+function idemPurge(now) {
+  for (const [k, v] of idemMap) {
+    if (now - v.at > IDEM_TTL_MS) idemMap.delete(k);
+    else break;   // Map 依放入順序走,後面的都比較新
+  }
+}
+
+function idemReadId(b) {
+  const v = b && b.client_request_id;
+  if (v === undefined || v === null || v === '') return { id: null };
+  if (typeof v !== 'string' || v.length > 64) {
+    return { error: '這次送出的表單識別碼不對,請重新整理頁面再記一次' };
+  }
+  return { id: v };
+}
+
+async function loadJournalForResponse(bookId, id) {
+  const r = await query(`${SELECT_JOURNAL_WITH_JOINS} WHERE j.book_id = $1 AND j.id = $2`, [bookId, id]);
+  if (r.rows.length === 0) return null;
+  const j = r.rows[0];
+  const t = await fetchTargetsForJournals([j.id]);
+  j.targets = t.get(j.id) || [];
+  return j;
+}
+
+/**
+ * 用冪等鍵跑 work()(work 回傳新建的 journal 整列)。
+ * 回 { journal, idempotent }。work 丟錯 → 拿掉佔位、照樣丟出去。
+ */
+async function runIdempotent(key, bookId, work) {
+  if (!key) return { journal: await work(), idempotent: false };
+  for (let round = 0; round < 3; round++) {
+    const now = Date.now();
+    idemPurge(now);
+    const hit = idemMap.get(key);
+    if (hit && now - hit.at <= IDEM_TTL_MS) {
+      if (hit.journalId) {
+        const j = await loadJournalForResponse(bookId, hit.journalId);
+        if (j) return { journal: j, idempotent: true };
+        idemMap.delete(key);   // 那筆不見了(不該發生)→ 當沒做過
+      } else if (hit.promise) {
+        try {
+          const jid = await hit.promise;
+          const j = await loadJournalForResponse(bookId, jid);
+          if (j) return { journal: j, idempotent: true };
+        } catch (_) { /* 第一次失敗 → 佔位已拿掉,下一輪自己做 */ }
+        continue;
+      }
+    }
+    // 佔位(開始寫入之前)
+    let resolveFn, rejectFn;
+    const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
+    promise.catch(() => {});   // 沒人在等時不要變成未處理的 rejection
+    const entry = { at: now, promise, journalId: null };
+    idemMap.delete(key);       // 先刪再放:保持 Map 依時間排序(過期清理靠這個)
+    idemMap.set(key, entry);
+    while (idemMap.size > IDEM_MAX) idemMap.delete(idemMap.keys().next().value);
+    try {
+      const journal = await work();
+      entry.journalId = journal.id;
+      entry.promise = null;
+      resolveFn(journal.id);
+      return { journal, idempotent: false };
+    } catch (e) {
+      if (idemMap.get(key) === entry) idemMap.delete(key);
+      rejectFn(e);
+      throw e;
+    }
+  }
+  // 連續三輪都撞到別人正在做又失敗 → 不再等,直接當一般請求處理會有重複風險;請使用者重送
+  throw httpError(409, '同一張單正在送出中,請稍等幾秒再看一次清單');
+}
+
 // ── POST /B/:bookCode/journals ─────────────────────────────────────────
 // body:
 //   date, type, amount, counterparty_id?, summary?, note?
@@ -298,6 +385,8 @@ router.post(
     if (b.summary !== undefined && b.summary !== null && String(b.summary).length > SUMMARY_MAX) {
       return res.status(400).json({ error: `摘要太長(最多 ${SUMMARY_MAX} 字)` });
     }
+    const idem = idemReadId(b);
+    if (idem.error) return res.status(400).json({ error: idem.error });
 
     // ── Resolve (subject_id, amount, targets) by type ──────────────
     let subjectId, amount, normalizedTargets = [];
@@ -339,7 +428,11 @@ router.post(
       }
     }
 
-    const result = await withTransaction(async (client) => {
+    const idemKey = idem.id ? `${req.book.id}:${req.user.id}:${idem.id}` : null;
+    const ran = await runIdempotent(idemKey, req.book.id, () => withTransaction(async (client) => {
+      // 關帳(§4.8):日期在關帳期間 → 409
+      await assertNotClosed(client, req.book.id, date, { mode: 'ui' });
+
       const subjectIds = [subjectId];
       if (reclassifyFromSubjectId) subjectIds.push(Number(reclassifyFromSubjectId));
       for (const t of normalizedTargets) subjectIds.push(t.target_subject_id);
@@ -381,9 +474,10 @@ router.post(
 
       journal.targets = await fetchTargetsForJournal(client, journal.id);
       return journal;
-    });
+    }));
 
-    res.status(201).json({ journal: result });
+    if (ran.idempotent) return res.status(200).json({ journal: ran.journal, idempotent: true });
+    res.status(201).json({ journal: ran.journal });
   })
 );
 
@@ -513,6 +607,13 @@ router.patch(
       }
       if (o.reverses_id) {
         throw Object.assign(new Error('沖銷單不能修改'), { status: 400 });
+      }
+
+      // 關帳(§4.8):原單的有效日期、或要改成的新日期在關帳期間 → 409
+      const closedThrough = await loadClosedThrough(client, req.book.id);
+      await assertNotClosed(client, req.book.id, toYmd(o.original_date) || toYmd(o.date), { mode: 'ui', closedThrough });
+      if (b.date !== undefined) {
+        await assertNotClosed(client, req.book.id, String(b.date), { mode: 'ui', closedThrough });
       }
 
       // Y2:複式單(POS 收班 / 薪資 / 訂金退款)只准改日期、摘要(備註也可),
@@ -685,7 +786,8 @@ router.patch(
 //   POST   /B/:bookCode/journals/:id/reverse  body { reason 必填, date 可省略 } —— canonical
 //   DELETE /B/:bookCode/journals/:id          舊入口,內部轉呼叫同一套(reason 預設「畫面沖銷(舊入口)」)
 //   兩條都:只限 owner / admin、鎖原單、支援 composite 與 reclassify 1:N、寫 reverse_audit_log、
-//   回 { reversal, original }。沖銷單 date = 台北今天(或指定),original_date = 原單日期(報表歸回原月)。
+//   回 { reversal, original }。沖銷單 date = 台北今天(或指定),original_date = 原單日期(報表歸回原月);
+//   原單已關帳時 original_date = 沖銷當天(第二輪 §4.8,見 reverseById)。
 //   真正寫分錄的邏輯在 posting.js 的 reverseJournalRow(supersede 也共用)。
 // ============================================================================
 const LEGACY_DELETE_REASON = '畫面沖銷(舊入口)';
@@ -707,9 +809,17 @@ async function reverseById(client, bookId, id, userId, reason, dateOverride) {
   );
   if (dupCheck.rows.length > 0) throw httpError(409, '這筆已經被沖銷過了');
 
-  const summary = `[沖銷] ${o.summary || ''}`.trim().slice(0, SUMMARY_MAX);
+  // 關帳(§4.8):原單在關帳期間照樣准沖,但沖銷單記在沖銷當天(original_date 也是那天,不回溯進關帳月),
+  // 摘要前綴「[沖銷 原單日期 的單]」→ 交出去的月報不變、本月多一筆反向。
+  // 沖銷單自己會落進關帳期間(指定的沖銷日期太早)→ 409。
+  const closedThrough = await loadClosedThrough(client, bookId);
+  const dates = reverseDatesFor(o, closedThrough, { dateOverride, mode: 'ui' });
+  const summary = (dates.closedOriginal
+    ? `${dates.summaryPrefix} ${o.summary || ''}`
+    : `[沖銷] ${o.summary || ''}`).trim().slice(0, SUMMARY_MAX);
   const reversal = await reverseJournalRow(client, bookId, o, {
-    date: dateOverride || taipeiToday(),
+    date: dates.date,
+    originalDate: dates.originalDate,
     summary,
     note: reason,
     userId,
@@ -910,6 +1020,8 @@ router.get('/B/:bookCode/journals/:id/history', loadBook, asyncHandler(async (re
 }));
 
 module.exports = router;
+// 小測試用(冪等佔位 / 競態)
+module.exports._internals = { runIdempotent, idemReadId, idemMap, IDEM_MAX, IDEM_TTL_MS };
 
 // 統一錯誤導向 (status 從 error.status 拿)
 router.use((err, req, res, next) => {

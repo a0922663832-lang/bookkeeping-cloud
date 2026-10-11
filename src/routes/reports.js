@@ -14,6 +14,9 @@ const { query } = require('../db');
 const { requireAuth } = require('../auth');
 const bookCode = require('../utils/bookCode');
 const asyncHandler = require('../utils/asyncHandler');
+const { helpers: postingHelpers } = require('./posting');
+
+const { toYmd } = postingHelpers;
 
 const router = express.Router();
 
@@ -257,6 +260,69 @@ async function getRangeTotal(bookId, fromDate, toDate, externalSource, subjectCo
   return result.rows[0];
 }
 
+// ── 第二輪 §4.6 / Y27:報表要講「還有待審沒算進來」────────────────────
+// pending_journals 該帳本 status='pending' 且 proposed_journal.date 落在期間內:
+//   count = 張數;total = 每張 |Σ科目腳|(複式)或 amount(單式),整數元。
+// 在 JS 裡算(不在 SQL 裡轉型):哪張待審單的日期 / 金額格式怪,只略過那張,不會讓整張報表壞掉。
+// 整段出錯 → 回 null + console.warn,報表照常回 200。
+const PENDING_SCAN_MAX = 5000;
+
+function pendingAmountCents(p) {
+  if (!p || typeof p !== 'object') return 0;
+  if (p.type === 'composite') {
+    if (!Array.isArray(p.legs)) return 0;
+    let s = 0;
+    for (const l of p.legs) {
+      if (!l || l.kind !== 'subject') continue;
+      const a = Number(l.amount);
+      if (Number.isFinite(a)) s += Math.round(a * 100);
+    }
+    return Math.abs(s);
+  }
+  const a = Number(p.amount);
+  return Number.isFinite(a) ? Math.abs(Math.round(a * 100)) : 0;
+}
+
+/** 純函式:rows = [{ proposed_journal }] → { count, total }(total 整數元;單式舊進貨單可能有小數,加總後四捨五入) */
+function summarizePending(rows, fromDate, toDate) {
+  let count = 0;
+  let cents = 0;
+  for (const r of rows) {
+    const p = r && r.proposed_journal;
+    const d = p && typeof p.date === 'string' ? p.date.slice(0, 10) : '';
+    if (!isRealDate(d) || d < fromDate || d > toDate) continue;
+    count++;
+    cents += pendingAmountCents(p);
+  }
+  return { count, total: Math.round(cents / 100) };
+}
+
+async function getPendingSummary(bookId, fromDate, toDate) {
+  try {
+    const r = await query(
+      `SELECT proposed_journal FROM pending_journals
+        WHERE book_id = $1 AND status = 'pending'
+        ORDER BY id DESC LIMIT ${PENDING_SCAN_MAX}`,
+      [bookId]
+    );
+    return summarizePending(r.rows, fromDate, toDate);
+  } catch (e) {
+    console.warn('[reports] 待審筆數查不到:', e.message);
+    return null;
+  }
+}
+
+// 關帳日(第二輪 §4.8;migration 018)。查不到就當沒關帳(只影響「已關帳」標示,不影響數字)。
+async function getClosedThrough(bookId) {
+  try {
+    const r = await query(`SELECT closed_through FROM books WHERE id = $1`, [bookId]);
+    return r.rows.length ? toYmd(r.rows[0].closed_through) : null;
+  } catch (e) {
+    console.warn('[reports] 關帳日查不到:', e.message);
+    return null;
+  }
+}
+
 // 期間內交易筆數(G22:用有效日期、不算沖銷單本身)
 async function countTransactions(bookId, fromDate, toDate) {
   const r = await query(`
@@ -314,7 +380,11 @@ router.get('/B/:bookCode/reports/dashboard', loadBook, asyncHandler(async (req, 
   `, [req.book.id]);
   const totalBalance = accRes.rows.reduce((s, a) => s + num(a.current_balance), 0);
 
+  // §4.6:本月還有待審沒算進來
+  const pending = await getPendingSummary(req.book.id, tmFrom, endTo);
+
   res.json({
+    pending,
     month: monthLabel(thisYear, thisMonth),
     this_month: {
       income: thisMonthData.income,
@@ -346,10 +416,15 @@ router.get('/B/:bookCode/reports/monthly', loadBook, asyncHandler(async (req, re
   const profit = incomeTotal - costTotal - expenseTotal;
 
   const cnt = await countTransactions(req.book.id, range.from, range.to);
+  const pending = await getPendingSummary(req.book.id, range.from, range.to);   // §4.6
+  const closedThrough = await getClosedThrough(req.book.id);                     // §4.8
 
   res.json({
     year: range.year, month: range.month,
     from: range.from, to: range.to,
+    pending,
+    closed: !!(closedThrough && range.to <= closedThrough),
+    closed_through: closedThrough,
     income: { total: f2(incomeTotal), by_subject: t1 },
     cost: { total: f2(costTotal), by_subject: t2 },
     expense: { total: f2(expenseTotal), by_subject: t3 },
@@ -398,8 +473,11 @@ router.get('/B/:bookCode/reports/yearly', loadBook, asyncHandler(async (req, res
     percent: denom > 0 ? +((num(r.amount) / denom) * 100).toFixed(2) : 0,
   }));
 
+  const pending = await getPendingSummary(req.book.id, yearFrom, yearTo);   // §4.6
+
   res.json({
     year: y,
+    pending,
     monthly,
     summary: {
       total_income: f2(totalIncome),
@@ -617,4 +695,4 @@ router.use((err, req, res, next) => {
 
 module.exports = router;
 // 純函式(scratchpad 小測試用)
-module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate };
+module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate, summarizePending, pendingAmountCents };

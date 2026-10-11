@@ -213,7 +213,7 @@ router.get('/internal/v1/repush-queue', asyncHandler(async (req, res) => {
 // 回 posted（含雲端最終科目，老闆若審核後改過科目以雲端為準）/ pending / rejected（含原因）
 // / reversed（已沖銷）/ missing
 router.post('/internal/v1/status-check', asyncHandler(async (req, res) => {
-  const v = hmac.verifyRequest(req.headers, req.rawBody);
+  const v = hmac.verifyRequest(req.headers, req.rawBody || '', req.method, req.path);
   if (!v.valid) return res.status(401).json({ error: v.reason });
 
   const { book, external_source, external_ids } = req.body || {};
@@ -271,7 +271,7 @@ router.post('/internal/v1/status-check', asyncHandler(async (req, res) => {
 }));
 
 router.post('/internal/v1/repush-ack', asyncHandler(async (req, res) => {
-  const v = hmac.verifyRequest(req.headers, req.rawBody);
+  const v = hmac.verifyRequest(req.headers, req.rawBody || '', req.method, req.path);
   if (!v.valid) return res.status(401).json({ error: v.reason });
 
   const { id, ok, note } = req.body || {};

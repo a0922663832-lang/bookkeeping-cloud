@@ -8,6 +8,12 @@
 // 可選:SMOKE_VIEWER_TOKEN=<editor 或 viewer 的登入憑證> → 多驗「記帳員不能沖銷」「覆核 ack 權限」。
 //
 // 判讀:staging 可能有別的資料,報表一律用「跟基準的差值」判斷。
+//
+// 第二輪(docs/記帳雲_施工計畫_第二輪_2026-10-11.md §4.1–§4.8)案例在 round2():
+//   會暫時把 NEST0099 的記帳模式改成「進待審」、暫時關帳到 2026-09-30,跑完(含中途出錯)一律改回原本的值。
+//   測試帳戶(smoke 開頭)跑完會停用;測試單沖掉或退回。
+//   「v1 簽章有 warn」要另外看容器 log:docker logs bookkeeping-cloud-app 2>&1 | grep '收到 v1 簽章'。
+//   斷言一律寫「預期的 4xx」或「預期的 2xx」,500 一定算失敗(分得出「擋了」跟「壞了」)。
 
 'use strict';
 
@@ -37,7 +43,17 @@ async function call(method, path, body, opts = {}) {
   if (opts.signed) {
     const t = String(Date.now());
     headers['X-Timestamp'] = t;
-    headers['X-Signature'] = 'sha256=' + crypto.createHmac('sha256', SECRET).update(`${t}.${raw || ''}`).digest('hex');
+    if (opts.signed === 'v1') {
+      // 舊格式(過渡期還收,雲端會 warn)
+      headers['X-Signature'] = 'sha256=' + crypto.createHmac('sha256', SECRET).update(`${t}.${raw || ''}`).digest('hex');
+    } else {
+      // v2(第二輪 §4.1):"v2." + ts + "." + METHOD + "." + path + "." + rawBody;path 不含 query
+      // opts.signPath:故意簽別的網址(驗「改網址就 401」)
+      const signPath = opts.signPath || path.split('?')[0];
+      headers['X-Signature-Version'] = '2';
+      headers['X-Signature'] = 'sha256=' + crypto.createHmac('sha256', SECRET)
+        .update(`v2.${t}.${method.toUpperCase()}.${signPath}.${raw || ''}`).digest('hex');
+    }
   }
   const r = await fetch(BASE + path, { method, headers, body: raw });
   let data = null;
@@ -262,6 +278,323 @@ async function main() {
   check(n(fin.data.profit) === n(finY.data.monthly[8].profit), 'G 結束時月報利潤 = 年報 9 月利潤', { m: fin.data.profit, y: finY.data.monthly[8].profit });
 }
 
+// ============================================================================
+// 第二輪 §4.1–§4.8
+// ============================================================================
+const ymdTaipei = (v) => {
+  if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return String(v);
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+};
+const todayTaipei = () => ymdTaipei(new Date());
+const pushPosting = (body, opts = {}) => call('POST', `${B}/internal/posting`, body, { signed: true, token: '', ...opts });
+const pushSupersede = (body) => call('POST', `${B}/internal/supersede`, body, { signed: true, token: '' });
+const expensePush = (extId, date, amount, accountRef) => ({
+  external_source: 'smoke', external_id: extId, event_type: 'expense.created', payload: { smoke: true },
+  proposed_journal: { date, type: 'expense', amount, subject_code: '6901', transfer_out_account_ref: accountRef || '現金袋', summary: `smoke R2 ${extId}` },
+});
+const pendingIdOf = (r) => (r.data && r.data.pending_journal && r.data.pending_journal.id) || null;
+const journalIdOf = (r) => (r.data && (r.data.journal_id || (r.data.journal && r.data.journal.id))) || null;
+
+async function round2() {
+  const book0 = await call('GET', B);
+  const b0 = book0.data.book || {};
+  const role = book0.data.my_role;
+  const origMode = b0.posting_mode;
+  const origClosed = b0.closed_through === undefined ? null : b0.closed_through;
+  check(book0.status === 200 && Object.prototype.hasOwnProperty.call(b0, 'closed_through'), 'K0 帳本詳情回關帳日欄位(migration 018 有跑)', b0);
+  if ((b0.posting_mode_per_source || {}).smoke !== undefined) {
+    ng('第二輪前提', `${BOOK} 對來源 smoke 有個別記帳模式,這支腳本不動那個設定 → 第二輪略過`);
+    return;
+  }
+  if (origClosed) {
+    ng('第二輪前提', `${BOOK} 本來就關帳到 ${origClosed},會擋到 9 月測試單 → 第二輪略過(請老闆先解鎖再跑)`);
+    return;
+  }
+
+  const subs = (await call('GET', `${B}/subjects`)).data.subjects || [];
+  const accs = (await call('GET', `${B}/accounts`)).data.accounts || [];
+  const S6901 = (subs.find((s) => s.code === '6901') || {}).id;
+  const CASH = (accs.find((a) => a.name === '現金袋') || {}).id;
+  const postJ = (body) => call('POST', `${B}/journals`, body);
+  const accountsNamed = async (name) => ((await call('GET', `${B}/accounts?include_inactive=1`)).data.accounts || []).filter((a) => a.name === name);
+
+  const pendingsToReject = [];
+  const acctsToDisable = [];
+  let modeChanged = false;
+  let closedChanged = false;
+  try {
+    // 進待審模式(來源 smoke 沒有個別設定 → 跟著帳本預設)。只用現有的 PATCH /B/:code,不直接改資料庫。
+    if (origMode !== 'review') {
+      const pm = await call('PATCH', B, { posting_mode: 'review' });
+      check(pm.status === 200 && pm.data.book && pm.data.book.posting_mode === 'review', 'R2 暫切「進待審」', pm);
+      modeChanged = pm.status === 200;
+    }
+
+    // ── §4.1 簽章含網址 ──
+    const h1 = await pushPosting(expensePush(`smoke:H1:${TS}`, '2026-09-23', 11));
+    check(h1.status === 202, 'H1 v2 簽章 → 收件(202 進待審)', h1);
+    if (pendingIdOf(h1)) pendingsToReject.push(pendingIdOf(h1));
+    const h2 = await pushPosting(expensePush(`smoke:H2:${TS}`, '2026-09-23', 11), { signPath: '/B/NEST0001/internal/posting' });
+    check(h2.status === 401, 'H2 v2 簽的是 NEST0001、送到 NEST0099 → 401', h2);
+    const h3 = await pushPosting(expensePush(`smoke:H3:${TS}`, '2026-09-23', 11), { signed: 'v1' });
+    check(h3.status === 202, 'H3 v1 舊簽章 → 仍收件(容器 log 要看到「收到 v1 簽章」)', h3);
+    if (pendingIdOf(h3)) pendingsToReject.push(pendingIdOf(h3));
+    const h4 = await call('POST', '/internal/v1/status-check',
+      { book: BOOK, external_source: 'smoke', external_ids: [`smoke:H1:${TS}`] }, { signed: true, token: '' });
+    check(h4.status === 200 && ((h4.data.results || [])[0] || {}).status === 'pending', 'H4 對帳狀態查詢 v2 → 200 且查到待審', h4);
+    const h5 = await call('POST', '/internal/v1/repush-ack', { id: -1, ok: false, note: 'smoke' }, { signed: true, token: '' });
+    check(h5.status === 404, 'H5 補推回報 v2 → 過簽章(假編號回 404,不是 401)', h5);
+    const h6 = await call('POST', '/internal/v1/status-check',
+      { book: BOOK, external_source: 'smoke', external_ids: ['x'] }, { signed: true, token: '', signPath: '/internal/v1/repush-ack' });
+    check(h6.status === 401, 'H6 拿別的入口的簽章來查狀態 → 401', h6);
+
+    // ── §4.6 報表帶待審 ──
+    const w0 = await monthly(2026, 9);
+    check(w0.status === 200 && w0.data.pending && Number.isInteger(w0.data.pending.count) && Number.isInteger(w0.data.pending.total),
+      'W0 月報有待審欄位(整數筆數 / 整數元)', w0.data.pending);
+    const w1 = await pushPosting(expensePush(`smoke:W:${TS}`, '2026-09-21', 500));
+    check(w1.status === 202, 'W1 推一張 $500 支出進待審', w1);
+    const w2 = await monthly(2026, 9);
+    const wp0 = w0.data.pending || {}, wp2 = w2.data.pending || {};
+    check(w2.status === 200 && wp2.count - wp0.count === 1 && wp2.total - wp0.total === 500, 'W2 月報待審 +1 筆、+$500', { before: wp0, after: wp2 });
+    check(n(w2.data.expense && w2.data.expense.total) === n(w0.data.expense && w0.data.expense.total), 'W3 費用合計沒算進待審那筆',
+      { before: w0.data.expense, after: w2.data.expense });
+    const wy = await call('GET', `${B}/reports/yearly?year=2026`);
+    check(wy.status === 200 && wy.data.pending && Number.isInteger(wy.data.pending.count), 'W4 年報有待審欄位', wy.data.pending);
+    const wd = await call('GET', `${B}/reports/dashboard`);
+    check(wd.status === 200 && wd.data.pending && Number.isInteger(wd.data.pending.count), 'W5 儀表板有待審欄位', wd.data.pending);
+    if (pendingIdOf(w1)) {
+      const wa = await call('POST', `${B}/pending-journals/${pendingIdOf(w1)}/approve`, { note: 'smoke' });
+      check(wa.status === 200 && journalIdOf(wa), 'W6 核准', wa);
+      if (journalIdOf(wa)) cleanup.push(journalIdOf(wa));
+      const w3 = await monthly(2026, 9);
+      check((w3.data.pending || {}).count === wp0.count && n(w3.data.expense.total) - n(w0.data.expense.total) === 500,
+        'W7 核准後待審回到基準、費用 +500', { pending: w3.data.pending, expense: w3.data.expense });
+    }
+
+    // ── §4.7 手動記帳冪等 ──
+    if (S6901 && CASH) {
+      const tag = `smoke I ${TS}`;
+      const crid = `smoke-${TS}-idem`;
+      const ib = { date: '2026-09-22', type: 'expense', amount: 37, subject_id: S6901, transfer_out_account_id: CASH, summary: tag, client_request_id: crid };
+      const i1 = await postJ(ib);
+      const i2 = await postJ(ib);
+      const I1 = i1.data.journal && i1.data.journal.id;
+      if (I1) cleanup.push(I1);
+      check(i1.status === 201 && I1 && !i1.data.idempotent, 'I1 第一次送出 → 201', i1);
+      check(i2.status === 200 && i2.data.idempotent === true && i2.data.journal && i2.data.journal.id === I1, 'I2 同一張表單重送 → 200、同一筆、idempotent', i2);
+      const il = await call('GET', `${B}/journals?from=2026-09-22&to=2026-09-22&limit=500`);
+      check(il.status === 200 && (il.data.journals || []).filter((j) => j.summary === tag).length === 1, 'I3 帳上只多 1 筆', { count: (il.data.journals || []).filter((j) => j.summary === tag).length });
+      const i4 = await postJ({ ...ib, client_request_id: `${crid}-2` });
+      const I4 = i4.data.journal && i4.data.journal.id;
+      if (I4) cleanup.push(I4);
+      check(i4.status === 201 && I4 && I4 !== I1, 'I4 換一張表單 → 多 1 筆', i4);
+      const i5 = await postJ({ ...ib, client_request_id: 'x'.repeat(65) });
+      check(i5.status === 400 && i5.data.error, 'I5 識別碼太長 → 400 白話', i5);
+    } else {
+      ng('I 手動記帳冪等', '找不到科目 6901 或帳戶 現金袋');
+    }
+
+    // ── §4.4 停用帳戶 → 422 ──
+    const offName = `smoke停用${TS}`.slice(0, 50);
+    const a1 = await pushPosting({ ...expensePush(`smoke:A1:${TS}`, '2026-09-24', 12, offName), ensure_accounts: [{ name: offName, type: 'cash' }] });
+    check(a1.status === 202, 'A1 推送帶新帳戶 → 自動建、收件', a1);
+    if (pendingIdOf(a1)) pendingsToReject.push(pendingIdOf(a1));
+    const offAcc = (await accountsNamed(offName))[0];
+    if (!offAcc) {
+      ng('A 停用帳戶', '帳戶沒建出來');
+    } else {
+      acctsToDisable.push(offAcc.id);
+      const off = await call('PATCH', `${B}/accounts/${offAcc.id}`, { is_active: false });
+      check(off.status === 200, 'A2 停用帳戶', off);
+      const a3 = await pushPosting({ ...expensePush(`smoke:A3:${TS}`, '2026-09-24', 12, offName), ensure_accounts: [{ name: offName, type: 'cash' }] });
+      check(a3.status === 422 && (a3.data.error || '').includes(offName) && /已停用/.test(a3.data.error || ''), 'A3 用停用帳戶推送 → 422、文案含帳戶名', a3);
+      check((await accountsNamed(offName)).every((a) => a.is_active === false), 'A4 推送沒有把停用的帳戶自動啟用');
+      const on = await call('PATCH', `${B}/accounts/${offAcc.id}`, { is_active: true });
+      check(on.status === 200, 'A5 重新啟用', on);
+      const a6 = await pushPosting(expensePush(`smoke:A6:${TS}`, '2026-09-24', 12, offName));
+      check(a6.status === 202, 'A6 啟用後重推 → 收件', a6);
+      if (pendingIdOf(a6)) pendingsToReject.push(pendingIdOf(a6));
+    }
+
+    // ── §4.3 supersede 補建帳戶 ──
+    const newAcc = `smoke應付${TS}`.slice(0, 50);
+    const ub = await pushPosting(expensePush(`smoke:U:${TS}`, '2026-09-25', 13));
+    check(ub.status === 202, 'U0 原單進待審', ub);
+    const uRep = (base, ver) => pushSupersede({
+      external_source: 'smoke', base_external_id: base, action: 'replace', reason: 'smoke 4.3', new_external_id: `smoke:U:${TS}@v${ver}`,
+      proposed_journal: { date: '2026-09-25', type: 'expense', amount: 13, subject_code: '6901', transfer_out_account_ref: newAcc, summary: `smoke U v${ver}` },
+      ensure_accounts: [{ name: newAcc, type: 'liability' }],
+    });
+    const u1 = await uRep(`smoke:U:${TS}`, 2);
+    check(u1.status === 200 && u1.data.new_pending_id, 'U1 改單用到沒有的負債帳戶 → 200(自動建)', u1);
+    const nA = await accountsNamed(newAcc);
+    check(nA.length === 1 && nA[0].type === 'liability', 'U2 帳戶建出來、類型是負債', nA);
+    if (nA[0]) acctsToDisable.push(nA[0].id);
+    const u3 = await uRep(`smoke:U:${TS}@v2`, 3);
+    check(u3.status === 200 && u3.data.new_pending_id, 'U3 同名再送一次 → 200', u3);
+    check((await accountsNamed(newAcc)).length === 1, 'U4 沒有重複建');
+    if (u3.data.new_pending_id) pendingsToReject.push(u3.data.new_pending_id);
+
+    // ── §4.2 發票三處 + §4.5 supersede 稽核 ──
+    const vLegs = [{ kind: 'subject', subject_code: '4101', amount: 1000 }, { kind: 'account', account_ref: '現金袋', amount: 1000 }];
+    const inv = (k) => [
+      { external_order_id: `smoke-${TS}-${k}a`, invoice_number: null, invoice_period: null, amount: 600, is_void: false },
+      { external_order_id: `smoke-${TS}-${k}b`, invoice_number: null, invoice_period: null, amount: 400, is_void: false },
+    ];
+    const invOf = async (k) => ((await call('GET', `${B}/invoices/by-period?yyyymm=202609`)).data.invoices || [])
+      .filter((i) => String(i.external_order_id || '').startsWith(`smoke-${TS}-${k}`));
+    const approveId = async (pid, name) => {
+      const r = await call('POST', `${B}/pending-journals/${pid}/approve`, { note: 'smoke' });
+      check(r.status === 200 && journalIdOf(r), name, r);
+      return journalIdOf(r);
+    };
+    const v1 = await pushPosting({
+      external_source: 'smoke', external_id: `smoke:V:${TS}`, event_type: 'pos_shift_settled', payload: { smoke: true },
+      invoices: inv('v1'),
+      proposed_journal: { date: '2026-09-26', type: 'composite', summary: `smoke V ${TS} v1`, legs: vLegs },
+    });
+    check(v1.status === 202, 'V1 待審模式推一張帶 2 張發票的收班', v1);
+    const JV1 = pendingIdOf(v1) ? await approveId(pendingIdOf(v1), 'V2 核准') : null;
+    const iv1 = await invOf('v1');
+    check(JV1 && iv1.length === 2 && iv1.every((i) => i.is_void === false && String(i.journal_log_id) === String(JV1)),
+      'V3 核准後發票 2 張、掛在這筆分錄上(以前待審模式會整批不見)', iv1);
+    const v4 = await pushSupersede({
+      external_source: 'smoke', base_external_id: `smoke:V:${TS}`, action: 'replace', reason: 'smoke 改單',
+      new_external_id: `smoke:V:${TS}@v2`, payload: { smoke: true, invoices: inv('v2') },
+      proposed_journal: { date: '2026-09-26', type: 'composite', summary: `smoke V ${TS} v2`, legs: vLegs },
+    });
+    check(v4.status === 200 && v4.data.reversed_journal_id && v4.data.new_pending_id, 'V4 改單 → 沖掉舊版、新版進待審', v4);
+    const iv1b = await invOf('v1');
+    check(iv1b.length === 2 && iv1b.every((i) => i.is_void === true), 'V5 舊版 2 張發票標作廢', iv1b);
+    if (JV1) {
+      const hist = await call('GET', `${B}/journals/${JV1}/history`);
+      check(hist.status === 200 && (hist.data.events || []).some((e) => e.type === 'reversed' && /自動沖銷/.test(e.reason || '')),
+        'V6 改單自動沖銷有寫歷史(原因含「自動沖銷」)', hist.data.events);
+    }
+    const JV2 = v4.data.new_pending_id ? await approveId(v4.data.new_pending_id, 'V7 新版核准') : null;
+    const iv2 = await invOf('v2');
+    check(JV2 && iv2.length === 2 && iv2.every((i) => i.is_void === false && String(i.journal_log_id) === String(JV2)), 'V8 新版核准後 2 張新發票', iv2);
+    const v9 = await pushSupersede({ external_source: 'smoke', base_external_id: `smoke:V:${TS}@v2`, action: 'void', reason: 'smoke 作廢' });
+    check(v9.status === 200 && v9.data.reversed_journal_id, 'V9 作廢 → 200', v9);
+    const iv2b = await invOf('v2');
+    check(iv2b.length === 2 && iv2b.every((i) => i.is_void === true), 'V10 作廢後發票標作廢', iv2b);
+    check((await invOf('v3')).length === 0, 'V11 作廢沒有產生新發票');
+    if (JV2) {
+      const hist2 = await call('GET', `${B}/journals/${JV2}/history`);
+      check(hist2.status === 200 && (hist2.data.events || []).some((e) => e.type === 'reversed' && /自動沖銷/.test(e.reason || '')),
+        'V12 作廢自動沖銷有寫歷史', hist2.data.events);
+    }
+
+    // ── §4.8 關帳 ──
+    if (role !== 'owner') {
+      ng('K 關帳', '登入帳號要是 NEST0099 的老闆才能設關帳(管理員不行),關帳案例沒跑');
+    } else if (!S6901 || !CASH) {
+      ng('K 關帳', '找不到科目 6901 或帳戶 現金袋');
+    } else {
+      const kj = await postJ({ date: '2026-09-10', type: 'expense', amount: 70, subject_id: S6901, transfer_out_account_id: CASH, summary: `smoke K ${TS}` });
+      const KJ = kj.data.journal && kj.data.journal.id;
+      check(kj.status === 201 && KJ, 'K1 關帳前先記一張 9/10 的單', kj);
+      const kp = await pushPosting(expensePush(`smoke:KP:${TS}`, '2026-09-20', 15));
+      check(kp.status === 202, 'K2 關帳前先推一張 9/20 的待審', kp);
+      const KP = pendingIdOf(kp);
+      if (KP) pendingsToReject.push(KP);
+
+      const tmr = new Date(Date.now() + 36 * 3600 * 1000);
+      const kf = await call('PATCH', B, { closed_through: ymdTaipei(tmr) });
+      check(kf.status === 400 && kf.data.error, 'K3 關帳日設在未來 → 400', kf);
+      const kl = await call('PATCH', B, { closed_through: '2026-09-30' });
+      closedChanged = kl.status === 200;
+      check(kl.status === 200 && kl.data.book && kl.data.book.closed_through === '2026-09-30', 'K4 老闆關帳到 2026-09-30', kl);
+      const kg = await call('GET', B);
+      check(kg.data.book && kg.data.book.closed_through === '2026-09-30', 'K5 帳本詳情回 2026-09-30', kg.data.book);
+      if (process.env.SMOKE_VIEWER_TOKEN) {
+        const kv = await call('PATCH', B, { closed_through: null }, { token: process.env.SMOKE_VIEWER_TOKEN });
+        check(kv.status === 403, 'K6 記帳員 / 唯讀改關帳日 → 403', kv);
+      }
+
+      const k7 = await postJ({ date: '2026-09-30', type: 'expense', amount: 5, subject_id: S6901, transfer_out_account_id: CASH, summary: `smoke K7 ${TS}` });
+      check(k7.status === 409 && /已經關帳/.test(k7.data.error || ''), 'K7 手動記 9/30 → 409 白話', k7);
+      if (k7.data.journal) cleanup.push(k7.data.journal.id);
+      const k8 = await postJ({ date: '2026-10-01', type: 'expense', amount: 5, subject_id: S6901, transfer_out_account_id: CASH, summary: `smoke K8 ${TS}` });
+      const K8 = k8.data.journal && k8.data.journal.id;
+      if (K8) cleanup.push(K8);
+      check(k8.status === 201 && K8, 'K8 手動記 10/1 → 201', k8);
+      if (K8) {
+        const k9 = await call('PATCH', `${B}/journals/${K8}`, { date: '2026-09-29' });
+        check(k9.status === 409 && /已經關帳/.test(k9.data.error || ''), 'K9 把 10/1 的單改成 9/29 → 409', k9);
+      }
+      if (KJ) {
+        const k10 = await call('PATCH', `${B}/journals/${KJ}`, { summary: 'x' });
+        check(k10.status === 409, 'K10 改關帳期間的單 → 409', k10);
+      }
+      const k11 = await pushPosting(expensePush(`smoke:K11:${TS}`, '2026-09-15', 16));
+      check(k11.status === 422 && k11.data.code === 'book_closed' && /補推/.test(k11.data.error || ''), 'K11 推 9/15 的單 → 422(請老闆解鎖後補推)', k11);
+      if (KP) {
+        const k12 = await call('POST', `${B}/pending-journals/${KP}/approve`, { note: 'smoke' });
+        check(k12.status === 409 && /已經關帳/.test(k12.data.error || ''), 'K12 核准 9/20 的待審 → 409', k12);
+        if (journalIdOf(k12)) cleanup.push(journalIdOf(k12));
+        const k13 = await pushSupersede({
+          external_source: 'smoke', base_external_id: `smoke:KP:${TS}`, action: 'replace', reason: 'smoke 關帳',
+          new_external_id: `smoke:KP:${TS}@v2`,
+          proposed_journal: { date: '2026-09-16', type: 'expense', amount: 15, subject_code: '6901', transfer_out_account_ref: '現金袋', summary: 'smoke K13' },
+        });
+        check(k13.status === 422 && k13.data.code === 'book_closed', 'K13 改單新版日期在關帳期間 → 422', k13);
+      }
+      if (KJ) {
+        const today = todayTaipei();
+        const [ty, tm] = today.split('-').map(Number);
+        const sepBefore = await monthly(2026, 9);
+        const curBefore = await monthly(ty, tm);
+        const k14 = await reverse2(KJ, 'smoke 關帳後沖銷');
+        const rv = k14.data.reversal || {};
+        check(k14.status === 200 && ymdTaipei(rv.original_date) === today && ymdTaipei(rv.date) === today,
+          'K14 沖 9/10 的單 → 200,沖銷單記在今天(不回溯進關帳月)', { status: k14.status, date: rv.date, original_date: rv.original_date, today });
+        check(String(rv.summary || '').startsWith('[沖銷 2026-09-10 的單]'), 'K15 沖銷單摘要標「[沖銷 2026-09-10 的單]」', rv.summary);
+        const sepAfter = await monthly(2026, 9);
+        const curAfter = await monthly(ty, tm);
+        check(n(sepAfter.data.expense.total) === n(sepBefore.data.expense.total) && n(sepAfter.data.profit) === n(sepBefore.data.profit),
+          'K16 9 月月報不變', { before: sepBefore.data.expense, after: sepAfter.data.expense });
+        check(n(curAfter.data.expense.total) - n(curBefore.data.expense.total) === -70, 'K17 本月多一筆反向(費用 −70)',
+          { before: curBefore.data.expense, after: curAfter.data.expense });
+        check(sepAfter.data.closed === true && curAfter.data.closed === false, 'K18 月報標「已關帳」:9 月是、本月不是',
+          { sep: sepAfter.data.closed, cur: curAfter.data.closed });
+      }
+
+      const ku = await call('PATCH', B, { closed_through: null });
+      check(ku.status === 200 && ku.data.book && ku.data.book.closed_through === null, 'K19 老闆解鎖(清空)', ku);
+      if (ku.status === 200) closedChanged = false;
+      const k20 = await postJ({ date: '2026-09-30', type: 'expense', amount: 5, subject_id: S6901, transfer_out_account_id: CASH, summary: `smoke K20 ${TS}` });
+      const K20 = k20.data.journal && k20.data.journal.id;
+      if (K20) cleanup.push(K20);
+      check(k20.status === 201 && K20, 'K20 解鎖後記 9/30 → 201', k20);
+    }
+  } finally {
+    // 一律改回原本的設定(中途出錯也要)
+    if (closedChanged) {
+      const r = await call('PATCH', B, { closed_through: origClosed });
+      if (r.status !== 200) lines.push(`  ! 關帳日改回失敗:${r.status} ${r.data.error || ''} —— 請老闆到設定頁手動清掉 ${BOOK} 的關帳日`);
+    }
+    if (modeChanged) {
+      const r = await call('PATCH', B, { posting_mode: origMode });
+      if (r.status !== 200) lines.push(`  ! 記帳模式改回 ${origMode} 失敗:${r.status} ${r.data.error || ''}`);
+    }
+    for (const pid of pendingsToReject) {
+      const r = await call('POST', `${B}/pending-journals/${pid}/reject`, { rejected_reason: 'smoke 自清' });
+      if (r.status !== 200 && r.status !== 409) lines.push(`  ! 退回待審 #${pid} 失敗:${r.status} ${r.data.error || ''}`);
+    }
+    for (const aid of acctsToDisable) {
+      const r = await call('PATCH', `${B}/accounts/${aid}`, { is_active: false });
+      if (r.status !== 200) lines.push(`  ! 停用測試帳戶 #${aid} 失敗:${r.status} ${r.data.error || ''}`);
+    }
+  }
+}
+
+const reverse2 = (id, reason) => call('POST', `${B}/journals/${id}/reverse`, { reason });
+
 async function selfClean() {
   for (const id of cleanup) {
     const r = await call('POST', `${B}/journals/${id}/reverse`, { reason: 'smoke 自清' });
@@ -272,6 +605,8 @@ async function selfClean() {
 
 main()
   .catch((e) => ng('腳本例外', e.stack || String(e)))
+  .then(() => (TOKEN ? round2() : null))
+  .catch((e) => ng('第二輪腳本例外', e.stack || String(e)))
   .then(selfClean)
   .finally(() => {
     console.log('==========================================');

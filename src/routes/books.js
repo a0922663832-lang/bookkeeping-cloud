@@ -18,6 +18,9 @@ const { query, withTransaction } = require('../db');
 const { requireAuth } = require('../auth');
 const bookCode = require('../utils/bookCode');
 const asyncHandler = require('../utils/asyncHandler');
+const { helpers: postingHelpers } = require('./posting');
+
+const { toYmd, isRealDate, taipeiToday } = postingHelpers;
 
 const router = express.Router();
 
@@ -208,10 +211,28 @@ router.post('/books', asyncHandler(async (req, res) => {
   res.status(201).json({ book });
 }));
 
+// ── 關帳(第二輪 §4.8 / Y26,migration 018 books.closed_through)────────────
+// DATE 欄位 pg 會解析成 Date,JSON 出去變成 ISO 時間(台北時區還會倒退一天)→ 一律轉成 'YYYY-MM-DD'。
+function bookOut(row) {
+  if (!row) return row;
+  const out = { ...row };
+  if ('closed_through' in out) out.closed_through = toYmd(out.closed_through);
+  return out;
+}
+
+/** 驗 closed_through:null / '' = 解除關帳;否則要是真日期、不能晚於今天(台北)。回 { value } 或 { error } */
+function checkClosedThrough(v) {
+  if (v === null || v === '') return { value: null };
+  if (typeof v !== 'string' || !isRealDate(v.trim())) return { error: '關帳日期不正確' };
+  const d = v.trim();
+  if (d > taipeiToday()) return { error: '關帳日不能晚於今天' };
+  return { value: d };
+}
+
 // ── GET /B/:bookCode ─────────────────────────────────────────────────
 router.get('/B/:bookCode', loadBook, (req, res) => {
   const { my_role, ...book } = req.book;
-  res.json({ book, my_role });
+  res.json({ book: bookOut(book), my_role });
 });
 
 // ── PATCH /B/:bookCode ───────────────────────────────────────────────
@@ -224,12 +245,26 @@ router.patch(
     const params = [];
     const allowed = ['name', 'company_name', 'tax_id', 'currency', 'fiscal_year_start_month', 'posting_mode'];
     const body = req.body || {};
+    // 關帳日(§4.8):只有老闆能設、改小(往前解鎖)、清空;管理員也不行
+    let closedChange;   // undefined = 沒動;null = 解除;'YYYY-MM-DD'
+    if (body.closed_through !== undefined) {
+      if (req.bookMember.role !== 'owner') {
+        return res.status(403).json({ error: '只有老闆能設定或解除關帳' });
+      }
+      const c = checkClosedThrough(body.closed_through);
+      if (c.error) return res.status(400).json({ error: c.error });
+      closedChange = c.value;
+    }
     for (const field of allowed) {
       if (body[field] === undefined) continue;
       const c = checkBookField(field, body[field]);
       if (c.error) return res.status(400).json({ error: c.error });
       updates.push(`${field} = $${params.length + 1}`);
       params.push(c.value);
+    }
+    if (closedChange !== undefined) {
+      updates.push(`closed_through = $${params.length + 1}::date`);
+      params.push(closedChange);
     }
     if (updates.length === 0) {
       return res.status(400).json({ error: '沒有要改的欄位' });
@@ -240,7 +275,12 @@ router.patch(
       `UPDATE books SET ${updates.join(', ')} WHERE id = $${params.length} RETURNING *`,
       params
     );
-    res.json({ book: result.rows[0] });
+    if (closedChange !== undefined) {
+      const before = toYmd(req.book.closed_through);
+      console.log(`[books] ${req.book.code} 關帳到 ${closedChange || '(無,已解除)'} by user ${req.user.id}`
+        + `(原本 ${before || '沒關帳'})`);
+    }
+    res.json({ book: bookOut(result.rows[0]) });
   })
 );
 

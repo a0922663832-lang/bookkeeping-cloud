@@ -56,6 +56,60 @@ function taipeiToday() {
   }).format(new Date());
 }
 
+// DATE 欄位 → 'YYYY-MM-DD'。pg 預設把 DATE 解析成「容器本地時間午夜」的 Date,
+// 所以用本地的年月日取回(不能用 toISOString,台北時區會倒退一天)。字串就取前 10 碼。
+function toYmd(d) {
+  if (d === null || d === undefined || d === '') return null;
+  if (d instanceof Date) {
+    if (isNaN(d.getTime())) return null;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  const s = String(d).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+// 來源代號 → 白話(稽核原因用;跟 public/common.js SOURCE_NAME 同一張)
+const SOURCE_NAME = {
+  leo_pos: '點餐結帳', leo_expense: '支出單', leo_inventory: '進貨', leo_inline: '訂金 / 刷卡撥款', leo_hr: '薪資',
+};
+function sourceLabel(src) {
+  return SOURCE_NAME[src] || '現場系統';
+}
+
+// ── 關帳(第二輪 §4.8 / Y26)──────────────────────────────────────────
+// books.closed_through(migration 018):這天(含)以前的帳不能再動。NULL = 沒關帳。
+// 每個擋點都呼叫同一份 assertNotClosed:
+//   mode 'ui'   → 409(畫面操作:手動記帳 / 改 / 沖銷指定日期 / 核准待審)
+//   mode 'push' → 422(現場系統推送 posting / supersede;來源端會停止重試並告警,老闆解鎖後到對帳頁補推)
+// db 可以是 transaction 的 client(會 FOR SHARE 鎖住帳本那列,關帳設定改到一半不會有人插隊入帳)或 { query }。
+async function loadClosedThrough(db, bookId) {
+  const r = await db.query(`SELECT closed_through FROM books WHERE id = $1 FOR SHARE`, [bookId]);
+  return r.rows.length ? toYmd(r.rows[0].closed_through) : null;
+}
+
+function closedMessage(closedThrough, mode) {
+  const base = `${closedThrough} 以前已經關帳,不能再動;要改請老闆先到設定頁解鎖`;
+  return mode === 'push' ? `${base},解鎖後到對帳頁補推` : base;
+}
+
+function isDateClosed(dateYmd, closedThrough) {
+  return !!(dateYmd && closedThrough && dateYmd <= closedThrough);
+}
+
+/**
+ * 有效日期落在關帳期間 → 丟錯(409 / 422)。日期格式不對就不在這裡擋(交給原本的驗證)。
+ * 傳了 opts.closedThrough 就不再查一次資料庫。回傳 closedThrough 讓呼叫端重用。
+ */
+async function assertNotClosed(db, bookId, date, opts) {
+  const o = opts || {};
+  const ct = o.closedThrough !== undefined ? o.closedThrough : await loadClosedThrough(db, bookId);
+  const ymd = toYmd(date);
+  if (isDateClosed(ymd, ct)) {
+    throw httpError(o.mode === 'push' ? 422 : 409, closedMessage(ct, o.mode), { errCode: 'book_closed' });
+  }
+  return ct;
+}
+
 async function loadBookOpen(req, res, next) {
   const code = (req.params.bookCode || '').toUpperCase();
   if (!bookCode.isValidFormat(code)) return res.status(400).json({ error: '帳本代碼格式不對' });
@@ -141,6 +195,13 @@ async function resolveSubjectId(client, bookId, leg) {
   return (await resolveSubject(client, bookId, leg)).id;
 }
 
+// Y4 後半(第二輪 §4.4):同名帳戶被老闆「停用」→ 422 白話講清楚(不自動啟用,停用是有意的)。
+// 以前只說「找不到」,來源端看不出是停用;更早是 500 → 推送整條 dead。
+function inactiveAccountError(name) {
+  return httpError(422, `帳戶「${name}」已停用,這筆沒辦法入帳;要繼續用請到主檔設定把它啟用,或請技術改推送`,
+    { errCode: 'account_inactive' });
+}
+
 async function resolveAccountId(client, bookId, leg) {
   if (leg.account_ref !== undefined && leg.account_ref !== null && leg.account_ref !== '') {
     // ensure_accounts 建帳戶時有 trim,找的時候也 trim(Y4)
@@ -149,17 +210,25 @@ async function resolveAccountId(client, bookId, leg) {
       `SELECT id FROM ag_accounts WHERE book_id = $1 AND name = $2 AND is_active = TRUE ORDER BY id LIMIT 1`,
       [bookId, name]
     );
-    if (r.rows.length === 0) throw httpError(422, `找不到帳戶「${name}」(可能改名或已停用)`);
+    if (r.rows.length === 0) {
+      const off = await client.query(
+        `SELECT id FROM ag_accounts WHERE book_id = $1 AND name = $2 AND is_active = FALSE LIMIT 1`,
+        [bookId, name]
+      );
+      if (off.rows.length > 0) throw inactiveAccountError(name);
+      throw httpError(422, `找不到帳戶「${name}」(可能改名或已停用)`);
+    }
     return r.rows[0].id;
   }
   if (leg.account_id) {
     const aid = Number(leg.account_id);
     if (!Number.isInteger(aid) || aid < 1) throw httpError(422, '帳戶編號不正確');
     const r = await client.query(
-      `SELECT id FROM ag_accounts WHERE id = $1 AND book_id = $2 AND is_active = TRUE`,
+      `SELECT id, name, is_active FROM ag_accounts WHERE id = $1 AND book_id = $2`,
       [aid, bookId]
     );
     if (r.rows.length === 0) throw httpError(422, '這本帳找不到這個帳戶(可能已停用)');
+    if (!r.rows[0].is_active) throw inactiveAccountError(r.rows[0].name);
     return r.rows[0].id;
   }
   throw httpError(422, '缺少帳戶');
@@ -450,8 +519,10 @@ async function insertJournalFromProposed(client, bookId, p, externalSource, exte
 //     (R10:以前做成 1:1「主 target 扣總額」,其他 target 沒沖,科目明細全錯)
 //   - 其他單式:type 對調、科目不變(報表依「類型 × 科目大類」正負號自然歸零)
 //   沖銷單一律寫 original_date = 原單日期(報表歸回原單月份)
+//   例外(第二輪 §4.8 關帳):原單在關帳期間 → 呼叫端傳 opts.originalDate = 沖銷當天,
+//     沖銷單不回溯進關帳月(交出去的月報不變、本月多一筆反向)。用 reverseDatesFor() 算。
 //   呼叫端負責:鎖原單、檢查狀態、寫 reverse_audit_log。
-// opts: { date, summary, note, userId, isAuto }
+// opts: { date, summary, note, userId, isAuto, originalDate? }
 // 回傳沖銷單整列
 // ============================================================================
 async function insertCompositeReverseHeader(client, bookId, o, subjectId, opts) {
@@ -469,11 +540,37 @@ async function insertCompositeReverseHeader(client, bookId, o, subjectId, opts) 
       bookId, opts.date, Number(o.amount),
       subjectId, o.counterparty_id || null,
       opts.summary, opts.note,
-      o.id, o.date, !!opts.isAuto,
+      o.id, opts.originalDate || o.date, !!opts.isAuto,
       opts.userId,
     ]
   );
   return ins.rows[0];
+}
+
+/**
+ * 沖銷單的日期怎麼寫(手動沖銷、supersede 自動沖銷共用;第二輪 §4.8)。
+ *   原單有效日期沒關帳 → { date: 指定日期 || 今天, originalDate: null(= 原單日期), closedOriginal: false }
+ *   原單有效日期已關帳 → { date: 指定日期 || 今天, originalDate: 同 date, closedOriginal: true,
+ *                         summaryPrefix: '[沖銷 YYYY-MM-DD 的單]' }
+ *   沖銷單自己落進關帳期間(指定日期太早,或關帳日設得比今天晚)→ 丟錯(畫面 409 / 推送 422)。
+ * keepOriginalDay:supersede 以前把沖銷單 date 寫成原單日期(沒關帳時照舊)。
+ */
+function reverseDatesFor(o, closedThrough, opts) {
+  const x = opts || {};
+  const origEff = toYmd(o.original_date) || toYmd(o.date);
+  const closedOriginal = isDateClosed(origEff, closedThrough);
+  if (!closedOriginal) {
+    const date = x.dateOverride || (x.keepOriginalDay ? o.date : taipeiToday());
+    if (x.dateOverride && isDateClosed(toYmd(x.dateOverride), closedThrough)) {
+      throw httpError(x.mode === 'push' ? 422 : 409, closedMessage(closedThrough, x.mode), { errCode: 'book_closed' });
+    }
+    return { date, originalDate: null, closedOriginal: false, summaryPrefix: '' };
+  }
+  const date = x.dateOverride || taipeiToday();
+  if (isDateClosed(toYmd(date), closedThrough)) {
+    throw httpError(x.mode === 'push' ? 422 : 409, closedMessage(closedThrough, x.mode), { errCode: 'book_closed' });
+  }
+  return { date, originalDate: date, closedOriginal: true, summaryPrefix: `[沖銷 ${origEff} 的單]` };
 }
 
 async function reverseJournalRow(client, bookId, o, opts) {
@@ -551,7 +648,7 @@ async function reverseJournalRow(client, bookId, o, opts) {
           newSubjectId, fromSubject,
           outAcc, inAcc,
           o.counterparty_id || null, opts.summary, opts.note,
-          o.id, o.date, !!opts.isAuto,
+          o.id, opts.originalDate || o.date, !!opts.isAuto,
           opts.userId,
         ]
       );
@@ -599,6 +696,55 @@ async function writeInvoices(client, bookId, journalLogId, invoices) {
         !!inv.is_void,
       ]
     );
+  }
+}
+
+// Y7(第二輪 §4.2):supersede 沖掉 base 時,掛在 base 上的發票一起標作廢(沒作廢的才標)
+async function voidInvoicesOfJournal(client, bookId, journalLogId, reason) {
+  const r = await client.query(
+    `UPDATE invoices SET is_void = TRUE, void_at = NOW(), void_reason = $1, updated_at = NOW()
+      WHERE book_id = $2 AND journal_log_id = $3 AND is_void = FALSE`,
+    [String(reason || '').slice(0, 500) || null, bookId, journalLogId]
+  );
+  return r.rowCount || 0;
+}
+
+// Y7:存進待審的 payload 要帶發票(頂層 invoices 優先、沒有才留 payload 原本的),核准時才拿得到
+function payloadForStore(payload, empId, invoices) {
+  const p = payloadWithTrigger(payload, empId);
+  if (Array.isArray(invoices) && invoices.length > 0) p.invoices = invoices;
+  return p;
+}
+
+// ── ensure_accounts(B5,第二輪 §4.3:posting 與 supersede replace 共用)──
+// 來源系統聲明本事件需要的帳戶,缺的自動補建(規格 §5.2.5.3.1「應付帳款-{廠商}」由雲端負責建立的 v1 落地)。
+// 白名單 type、name 長度限制;已存在(含停用)一律不動 —— 停用的會在 resolveAccountId 講清楚(§4.4),不自動啟用。
+// 用 pool 的 query(不在呼叫端的 transaction 裡):撞 UNIQUE 時只記 warn,不會把呼叫端的 transaction 弄壞。
+async function ensureAccounts(bookId, list) {
+  if (!Array.isArray(list)) return;
+  for (const acc of list.slice(0, 5)) {
+    const name = acc && typeof acc.name === 'string' ? acc.name.trim().slice(0, 50) : '';
+    const type = acc && acc.type;
+    if (!name || !['cash', 'bank', 'virtual', 'liability'].includes(type)) continue;
+    try {
+      // 先查後插。migration 017 起 ag_accounts(book_id, name) 有 UNIQUE(科目則是 subjects(book_id, code) WHERE code<>''),
+      // 兩張同時推來撞到時,第二筆 INSERT 會被 UNIQUE 擋下 → 進下面 catch 只記 warn,
+      // 後面 resolveAccountId 照樣找得到先建的那一個(不會建出兩個同名帳戶)。
+      const exists = await query(
+        `SELECT id FROM ag_accounts WHERE book_id = $1 AND name = $2`,
+        [bookId, name]
+      );
+      if (exists.rows.length > 0) continue;
+      const created = await query(
+        `INSERT INTO ag_accounts (book_id, name, type, display_order)
+         SELECT $1, $2, $3, COALESCE(MAX(display_order), 0) + 10 FROM ag_accounts WHERE book_id = $1
+         RETURNING id`,
+        [bookId, name, type]
+      );
+      console.log(`[posting] ensure_accounts: 建立 ${name} (${type}) → id ${created.rows[0].id}`);
+    } catch (e) {
+      console.warn(`[posting] ensure_accounts ${name} failed: ${e.message}`);
+    }
   }
 }
 
@@ -658,10 +804,10 @@ function payloadWithTrigger(payload, empId) {
 // POST /B/:bookCode/internal/posting
 // ============================================================================
 router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, res) => {
-  // auth
+  // auth(第二輪 §4.1:簽章含 method + path)
   let hmacValid = false;
   if (hmac.isConfigured()) {
-    const r = hmac.verifyRequest(req.headers, req.rawBody || '');
+    const r = hmac.verifyRequest(req.headers, req.rawBody || '', req.method, req.path);
     if (!r.valid) {
       await logWebhookInbound(req, req.book.id, false, 401, { error: r.reason });
       return res.status(401).json({ error: r.reason });
@@ -699,35 +845,8 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
     return res.status(vErr.status).json(body);
   }
 
-  // Phase 3：ensure_accounts — 來源系統聲明本事件需要的帳戶，缺的自動補建
-  // （規格 §5.2.5.3.1「應付帳款-{廠商}」由雲端負責建立的 v1 落地）
-  // 白名單 type、name 長度限制；已存在（含停用）一律不動。
-  if (Array.isArray(b.ensure_accounts)) {
-    for (const acc of b.ensure_accounts.slice(0, 5)) {
-      const name = acc && typeof acc.name === 'string' ? acc.name.trim().slice(0, 50) : '';
-      const type = acc && acc.type;
-      if (!name || !['cash', 'bank', 'virtual', 'liability'].includes(type)) continue;
-      try {
-        // 先查後插。migration 017 起 ag_accounts(book_id, name) 有 UNIQUE(科目則是 subjects(book_id, code) WHERE code<>''),
-        // 兩張同時推來撞到時,第二筆 INSERT 會被 UNIQUE 擋下 → 進下面 catch 只記 warn,
-        // 後面 resolveAccountId 照樣找得到先建的那一個(不會建出兩個同名帳戶)。
-        const exists = await query(
-          `SELECT id FROM ag_accounts WHERE book_id = $1 AND name = $2`,
-          [req.book.id, name]
-        );
-        if (exists.rows.length > 0) continue;
-        const created = await query(
-          `INSERT INTO ag_accounts (book_id, name, type, display_order)
-           SELECT $1, $2, $3, COALESCE(MAX(display_order), 0) + 10 FROM ag_accounts WHERE book_id = $1
-           RETURNING id`,
-          [req.book.id, name, type]
-        );
-        console.log(`[posting] ensure_accounts: 建立 ${name} (${type}) → id ${created.rows[0].id}`);
-      } catch (e) {
-        console.warn(`[posting] ensure_accounts ${name} failed: ${e.message}`);
-      }
-    }
-  }
+  // Phase 3:ensure_accounts — 缺的帳戶自動補建(抽成 ensureAccounts,supersede replace 也用;§4.3)
+  await ensureAccounts(req.book.id, b.ensure_accounts);
 
   // idempotency
   const existJ = await query(
@@ -760,12 +879,26 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
     return res.status(422).json(body);
   }
 
+  // 關帳(§4.8):日期在關帳期間 → 422(auto 與 review 都擋:進了待審也核准不了,不如收件就退,
+  // 讓來源端標失敗 + 告警,老闆解鎖後到對帳頁補推)。auto 的 transaction 裡會再驗一次(鎖帳本那列)。
+  try {
+    await assertNotClosed({ query }, req.book.id, proposed_journal.date, { mode: 'push' });
+  } catch (e) {
+    if (!e.status) throw e;
+    const body = { error: e.message, code: e.errCode };
+    await logWebhookInbound(req, req.book.id, hmacValid, e.status, body);
+    return res.status(e.status).json(body);
+  }
+
   if (mode === 'auto') {
     let webhookLogId = null;
     let result;
     try {
       result = await withTransaction(async (client) => {
         webhookLogId = await logWebhookInbound(req, req.book.id, hmacValid, 0, { in_progress: true });
+
+        // 關帳(§4.8):在 transaction 裡鎖住帳本那列再驗一次,關帳設定改到一半不會有人插隊入帳
+        await assertNotClosed(client, req.book.id, proposed_journal.date, { mode: 'push' });
 
         const pj = await client.query(
           `INSERT INTO pending_journals (book_id, external_source, external_id, event_id, payload, proposed_journal, status)
@@ -795,7 +928,9 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
       });
     } catch (e) {
       const status = e.status || 500;
-      const body = e.status ? { error: e.message } : { error: '系統發生錯誤,這筆沒有入帳' };
+      const body = e.status
+        ? (e.errCode ? { error: e.message, code: e.errCode } : { error: e.message })
+        : { error: '系統發生錯誤,這筆沒有入帳' };
       if (webhookLogId) await updateWebhookLog(webhookLogId, status, { error: e.message });
       else await logWebhookInbound(req, req.book.id, hmacValid, status, { error: e.message });
       if (!e.status) throw e;
@@ -821,11 +956,12 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
     await logWebhookInbound(req, req.book.id, hmacValid, e.status, body);
     return res.status(e.status).json(body);
   }
+  // Y7(§4.2):頂層 invoices 也存進 payload(以前只存 payload,發票整批掉;核准時從 payload.invoices 讀)
   const pendingRes = await query(
     `INSERT INTO pending_journals (book_id, external_source, external_id, event_id, payload, proposed_journal, status)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'pending') RETURNING *`,
     [req.book.id, external_source, external_id, event_id || null,
-     JSON.stringify(payloadWithTrigger(payload, triggeredEmpId)), JSON.stringify(proposed_journal)]
+     JSON.stringify(payloadForStore(payload, triggeredEmpId, invoices)), JSON.stringify(proposed_journal)]
   );
   const body = { mode: 'review', status: 'pending', pending_journal: pendingRes.rows[0] };
   await logWebhookInbound(req, req.book.id, hmacValid, 202, { pending_id: pendingRes.rows[0].id, mode: 'review' });
@@ -844,10 +980,10 @@ router.post('/B/:bookCode/internal/posting', loadOpen, asyncHandler(async (req, 
 // 冪等：replace 以 new_external_id 判重；void 重送時 base 已沖銷 → idempotent
 // ============================================================================
 router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req, res) => {
-  // auth — 同 /internal/posting
+  // auth — 同 /internal/posting(第二輪 §4.1:簽章含 method + path)
   let hmacValid = false;
   if (hmac.isConfigured()) {
-    const r = hmac.verifyRequest(req.headers, req.rawBody || '');
+    const r = hmac.verifyRequest(req.headers, req.rawBody || '', req.method, req.path);
     if (!r.valid) {
       await logWebhookInbound(req, req.book.id, false, 401, { error: r.reason });
       return res.status(401).json({ error: r.reason });
@@ -864,7 +1000,7 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
 
   const b = req.body || {};
   const { external_source, base_external_id, action, reason, event_id,
-          new_external_id, proposed_journal, payload } = b;
+          new_external_id, proposed_journal, payload, invoices } = b;
   const triggeredEmpId = readTriggeredEmpId(b, payload);
 
   if (!external_source || !base_external_id) {
@@ -895,7 +1031,12 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
       await logWebhookInbound(req, req.book.id, hmacValid, vErr.status, body);
       return res.status(vErr.status).json(body);
     }
+    // B5(§4.3):新版本用到的新帳戶(例:薪資重算第一次用到「應付代扣稅款」)先補建,
+    // 不然存進待審前的檢查就找不到帳戶。在 transaction 外面做(撞 UNIQUE 不會弄壞下面的 transaction)。
+    await ensureAccounts(req.book.id, b.ensure_accounts);
   }
+
+  const reasonText = String(reason).slice(0, 500);
 
   let result;
   try {
@@ -923,6 +1064,12 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
           out.idempotent = true;
           return out;
         }
+      }
+
+      // 關帳(§4.8):鎖住帳本那列讀關帳日;新版本日期在關帳期間 → 422(整包不做,原單也不沖)
+      const closedThrough = await loadClosedThrough(client, req.book.id);
+      if (action === 'replace') {
+        await assertNotClosed(client, req.book.id, proposed_journal.date, { mode: 'push', closedThrough });
       }
 
       // 1. base 還在待審 → 退回
@@ -957,14 +1104,26 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
       if (jr.rows.length > 0) {
         const o = jr.rows[0];
         if (!o.reversed_by_id && !o.reverses_id) {
+          // 沒關帳:沖銷單日期 = 原單日期(照舊);原單已關帳:沖銷單記在今天、摘要標「[沖銷 原單日期 的單]」
+          const dates = reverseDatesFor(o, closedThrough, { keepOriginalDay: true, mode: 'push' });
+          const baseSummary = `[來源單據${action === 'void' ? '作廢' : '修改'}沖銷] ${base_external_id}`;
           const reverse = await reverseJournalRow(client, req.book.id, o, {
-            date: o.date,
-            summary: `[來源單據${action === 'void' ? '作廢' : '修改'}沖銷] ${base_external_id}`.slice(0, SUMMARY_MAX),
-            note: String(reason).slice(0, 500),
+            date: dates.date,
+            originalDate: dates.originalDate,
+            summary: (dates.summaryPrefix ? `${dates.summaryPrefix} ${baseSummary}` : baseSummary).slice(0, SUMMARY_MAX),
+            note: reasonText,
             userId: SYSTEM_BOT_USER_ID,
             isAuto: true,
           });
           out.reversed_journal_id = reverse.id;
+          // Y11 後半(§4.5):自動沖銷也寫稽核,明細頁「歷史」才看得到是誰、為什麼沖的
+          await client.query(
+            `INSERT INTO reverse_audit_log (original_journal_id, reverse_journal_id, reversed_by_user_id, reason)
+             VALUES ($1, $2, $3, $4)`,
+            [o.id, reverse.id, SYSTEM_BOT_USER_ID, `${sourceLabel(external_source)}自動沖銷:${reasonText}`]
+          );
+          // Y7(§4.2):原單的發票一起標作廢(改單的新版核准後會寫新的發票)
+          out.voided_invoices = await voidInvoicesOfJournal(client, req.book.id, o.id, reasonText);
         } else {
           out.idempotent = out.idempotent || !!o.reversed_by_id; // void 重送：已沖銷過
         }
@@ -973,11 +1132,12 @@ router.post('/B/:bookCode/internal/supersede', loadOpen, asyncHandler(async (req
       // 3. replace → 新版本永遠進待審(存之前先驗,錯的單 422)
       if (action === 'replace') {
         await precheckProposed(client, req.book.id, proposed_journal);
+        // Y7(§4.2):新版的發票(頂層 invoices 優先、沒有才用 payload.invoices)存進待審 payload,核准時寫入
         const insP = await client.query(
           `INSERT INTO pending_journals (book_id, external_source, external_id, event_id, payload, proposed_journal, status)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'pending') RETURNING id`,
           [req.book.id, external_source, new_external_id, event_id || null,
-           JSON.stringify(payloadWithTrigger(payload, triggeredEmpId)), JSON.stringify(proposed_journal)]
+           JSON.stringify(payloadForStore(payload, triggeredEmpId, invoices)), JSON.stringify(proposed_journal)]
         );
         out.new_pending_id = insP.rows[0].id;
       }
@@ -1164,6 +1324,8 @@ async function approveOne(client, bookId, pendingId, userId, note) {
   if (pj.status !== 'pending') throw httpError(409, STATUS_TEXT[pj.status] || '這筆已經被處理過了');
 
   const proposed = pj.proposed_journal;
+  // 關帳(§4.8):待審單的日期在關帳期間 → 409,不准核准進關帳月
+  await assertNotClosed(client, bookId, proposed && proposed.date, { mode: 'ui' });
   const triggeredEmpId = (pj.payload && pj.payload.triggered_by_emp_id) || null;
   let inserted;
   try {
@@ -1262,9 +1424,15 @@ module.exports.helpers = {
   resolveAccountId,
   writeInvoices,
   reverseJournalRow,
+  reverseDatesFor,
   httpError,
   isRealDate,
   taipeiToday,
+  toYmd,
+  loadClosedThrough,
+  assertNotClosed,
+  isDateClosed,
+  closedMessage,
   SYSTEM_BOT_USER_ID,
 };
 // 純函式(scratchpad 小測試用)
@@ -1275,4 +1443,9 @@ module.exports.pure = {
   validateProposedJournal,
   isRealDate,
   clampInt,
+  toYmd,
+  isDateClosed,
+  closedMessage,
+  reverseDatesFor,
+  payloadForStore,
 };
