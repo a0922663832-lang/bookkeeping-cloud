@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 主檔設定</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -291,7 +291,7 @@ table.master-table tr.inactive{opacity:.45;background:#fafafa}
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
 <script src="/common.js"></script>
 <script>
 if (CC.initPage('setup')) {
@@ -373,7 +373,7 @@ if (CC.initPage('setup')) {
     });
   });
 
-  const subjectModal = new bootstrap.Modal($('subjectModal'));
+  const subjectModal = CC.makeModal($('subjectModal'));
   function openSubjectModal(id) {
     $('smError').classList.add('d-none');
     if (id) {
@@ -468,7 +468,7 @@ if (CC.initPage('setup')) {
     applyLastResult('acct', 'acctRows');
   }
 
-  const accountModal = new bootstrap.Modal($('accountModal'));
+  const accountModal = CC.makeModal($('accountModal'));
   function openAccountModal(id) {
     $('amError').classList.add('d-none');
     const cpOpts = (cache.cpAll || cache.counterparties || []).filter((c) => c.is_active !== false).map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
@@ -582,7 +582,7 @@ if (CC.initPage('setup')) {
     applyLastResult('cp', 'cpRows');
   }
 
-  const counterpartyModal = new bootstrap.Modal($('counterpartyModal'));
+  const counterpartyModal = CC.makeModal($('counterpartyModal'));
   function openCounterpartyModal(id) {
     $('cmError').classList.add('d-none');
     if (id) {

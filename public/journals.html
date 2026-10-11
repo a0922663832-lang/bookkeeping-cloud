@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 明細</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -25,6 +25,8 @@ table.journals-table td{padding:11px 10px;border-bottom:1px solid #f0ece4;vertic
 table.journals-table tr[data-id]:hover{background:#faf8f5;cursor:pointer}
 table.journals-table tr.reversed{opacity:.5;text-decoration:line-through}
 table.journals-table tr.is-reverse{background:#fff5f5}
+table.journals-table tr.closed-row td{color:#999}
+table.journals-table tr.closed-row .btn:disabled{opacity:.4}
 .type-chip{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:500}
 .type-chip.expense{background:#fdeae8;color:#a94a3a}
 .type-chip.income{background:#e8f5ed;color:#2a7a4a}
@@ -275,13 +277,19 @@ table.journals-table tr.is-reverse{background:#fff5f5}
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" integrity="sha384-BSxuMLxX+FCbTdYec3TbXlnMGEEM2QXTFdtDaveen71o+jswm2J36+xFqp8k4VHM" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
 <script src="/common.js"></script>
 <script>
 if (CC.initPage('journals')) {
   let myRole = null;
+  let closedThrough = null;  // 關帳日 YYYY-MM-DD(沒關帳 = null);這天以前的帳不能再改
+  let reqId = null;          // 這一張「記一筆」表單的防重複單號:重送用同一個,成功才換新
   let lastResult = null;     // 剛做完的動作結果,重畫清單後還要接回那一列旁邊
+
+  function closedTitle() { return `${closedThrough} 以前已關帳,不能再改`; }
+  // 已關帳期間的單仍可沖銷:沖銷單記在今天,不會動到已關帳的月份
+  const REVERSE_CLOSED_TITLE = '這筆在已關帳期間,沖銷會記在今天,不會改到已關帳的月份';
 
   function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類', composite: '複式' })[t] || '其他'; }
   const CP_TYPE_NAME = { income: '客戶', expense: '廠商', both: '雙向' };
@@ -384,16 +392,19 @@ if (CC.initPage('journals')) {
       // 複式單不給編輯(各腳牽動好幾個帳戶);沖銷只有帳本擁有者 / 管理員能做
       const canEditRow = !isReversed && !isReverse && !isComposite && mayWrite;
       const canReverseRow = !isReversed && !isReverse && mayAdmin;
-      return `<tr class="${cls}" data-id="${esc(j.id)}">
-        <td>${esc(fmtDate(j.date))}</td>
+      // 已關帳的日期:整列灰字加鎖頭,編輯 / 沖銷鈕灰掉並寫原因
+      const isClosed = CC.isClosedDate(j.date, closedThrough);
+      const lockAttr = isClosed ? ` disabled title="${esc(closedTitle())}"` : '';
+      return `<tr class="${cls}${isClosed ? ' closed-row' : ''}" data-id="${esc(j.id)}">
+        <td>${isClosed ? '🔒 ' : ''}${esc(fmtDate(j.date))}</td>
         <td>${reverseLabel}${reversedLabel}<span class="type-chip ${esc(typeKey)}">${esc(typeName(typeKey))}</span></td>
         <td>${subjectCell}</td>
         <td>${esc(j.summary || '')}${editedBadge}</td>
         <td>${esc(j.counterparty_name || '')}</td>
         <td class="amount-cell ${esc(typeKey)}">${esc(fmtMoney(j.amount))}</td>
         <td>
-          ${canEditRow ? `<button class="btn btn-outline-primary btn-icon" data-act="edit" data-id="${esc(j.id)}" title="編輯">✏️</button> ` : ''}
-          ${canReverseRow ? `<button class="btn btn-outline-danger btn-icon" data-act="reverse" data-id="${esc(j.id)}" title="沖銷這筆">↺</button>` : ''}
+          ${canEditRow ? `<button class="btn btn-outline-primary btn-icon" data-act="edit" data-id="${esc(j.id)}"${lockAttr || ' title="編輯"'}>✏️</button> ` : ''}
+          ${canReverseRow ? `<button class="btn btn-outline-danger btn-icon" data-act="reverse" data-id="${esc(j.id)}" title="${isClosed ? REVERSE_CLOSED_TITLE : '沖銷這筆'}">↺</button>` : ''}
         </td>
       </tr>`;
     }).join('');
@@ -411,6 +422,7 @@ if (CC.initPage('journals')) {
     const b = ev.target.closest('[data-act]');
     if (b) {
       ev.stopPropagation();
+      if (b.disabled) return;
       const id = Number(b.dataset.id);
       if (b.dataset.act === 'edit') openEdit(id);
       else if (b.dataset.act === 'reverse') doReverse(id, rowEl(id)).then((ok) => { if (ok) reload(); });
@@ -488,9 +500,11 @@ if (CC.initPage('journals')) {
   }
 
   // ── 新增 / 編輯 modal ──────────────────────────────────────────
-  const journalModal = new bootstrap.Modal($('journalModal'));
+  // Bootstrap 沒載入(店內連不上外網)時用備援視窗,頁面其餘功能不受影響
+  const journalModal = CC.makeModal($('journalModal'));
 
   function openNew() {
+    reqId = CC.newRequestId();      // 每開一張新表單換一個
     $('jmEditId').value = '';
     $('jmTitle').textContent = '記一筆';
     $('jmReverseBtn').classList.add('d-none');
@@ -623,9 +637,12 @@ if (CC.initPage('journals')) {
         await api(`/B/${BOOK}/journals/${editId}`, { method: 'PATCH', body: payload });
         lastResult = { id: Number(editId), ok: true, msg: '✓ 已儲存' };
       } else {
-        await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
+        if (!reqId) reqId = CC.newRequestId();
+        payload.client_request_id = reqId;     // 網路閃一下、重按送出時,後端認得這是同一筆,不會多記
+        const res = await api(`/B/${BOOK}/journals`, { method: 'POST', body: payload });
+        reqId = null;                          // 成功了,下一張表單才換新單號
         lastResult = null;
-        inlineResult($('opMsg'), true, '✓ 已記下一筆');
+        inlineResult($('opMsg'), true, res && res.idempotent ? '✓ 這一筆剛才已經記下了,沒有重複記' : '✓ 已記下一筆');
       }
       journalModal.hide();
       reload();
@@ -687,7 +704,7 @@ if (CC.initPage('journals')) {
   }
 
   // ── 詳情 modal ─────────────────────────────────────────────────
-  const detailModal = new bootstrap.Modal($('detailModal'));
+  const detailModal = CC.makeModal($('detailModal'));
   async function openDetail(id) {
     const tr = rowEl(id);
     try {
@@ -735,6 +752,10 @@ if (CC.initPage('journals')) {
       const untouched = !j.reversed_by_id && !j.reverses_id;
       $('dtEditBtn').style.display = untouched && !isComposite && CC.can(myRole, 'write') ? '' : 'none';
       $('dtReverseBtn').style.display = untouched && CC.can(myRole, 'admin') ? '' : 'none';
+      // 已關帳的日期:詳情裡的編輯 / 沖銷鈕也灰掉並寫原因
+      const lockedDay = CC.isClosedDate(j.date, closedThrough);
+      $('dtEditBtn').disabled = lockedDay; $('dtEditBtn').title = lockedDay ? closedTitle() : '';
+      $('dtReverseBtn').disabled = false; $('dtReverseBtn').title = lockedDay ? REVERSE_CLOSED_TITLE : '';
       $('dtEditBtn').onclick = () => { detailModal.hide(); openEdit(id); };
       $('dtReverseBtn').onclick = async () => {
         const ok = await doReverse(id, $('dtBody'));
@@ -755,7 +776,15 @@ if (CC.initPage('journals')) {
   }
 
   // ── 排序(長按 ≡ 拖曳)— 支援 帳戶 / 科目 / 對象 ───────────────
-  const reorderModal = new bootstrap.Modal($('reorderModal'));
+  const reorderModal = CC.makeModal($('reorderModal'));
+  // 拖曳排序要靠外網元件;沒載入時講白話,不要整頁壞掉
+  function sortableReady() {
+    if (typeof Sortable !== 'undefined') return true;
+    // 排序鈕都在「記一筆」視窗裡,訊息放在視窗底下的紅字區
+    $('jmError').textContent = '排序功能暫時用不了(店內連不上外網),請稍後重新整理頁面再試';
+    $('jmError').classList.remove('d-none');
+    return false;
+  }
   let reorderSortables = [];
   let reorderKind = 'accounts'; // 'accounts' | 'subjects' | 'counterparties'
 
@@ -765,6 +794,7 @@ if (CC.initPage('journals')) {
   }
 
   function openReorderAccounts() {
+    if (!sortableReady()) return;
     reorderKind = 'accounts';
     $('reorderError').classList.add('d-none');
     document.querySelector('#reorderModal .modal-title').textContent = '帳戶排序';
@@ -789,6 +819,7 @@ if (CC.initPage('journals')) {
 
   // 科目排序(parentTypes 限制大類;null = 全部)
   function openReorderSubjects(parentTypes) {
+    if (!sortableReady()) return;
     reorderKind = 'subjects';
     $('reorderError').classList.add('d-none');
     document.querySelector('#reorderModal .modal-title').textContent = '科目排序';
@@ -824,6 +855,7 @@ if (CC.initPage('journals')) {
   }
 
   function openReorderCounterparties() {
+    if (!sortableReady()) return;
     reorderKind = 'counterparties';
     $('reorderError').classList.add('d-none');
     document.querySelector('#reorderModal .modal-title').textContent = '對象排序';
@@ -946,7 +978,8 @@ if (CC.initPage('journals')) {
   CC.onResume(() => {
     if ($('journalModal').classList.contains('show') || $('reorderModal').classList.contains('show')) return;
     if (document.querySelector('#rows .cc-result')) return;
-    loadLookups().then(reload).catch(() => {});
+    // 關帳日可能剛被老闆改過,一起重抓
+    CC.loadClosedThrough(true).then((c) => { closedThrough = c; }).then(loadLookups).then(reload).catch(() => {});
   });
 
   $('newBtn').addEventListener('click', openNew);
@@ -961,6 +994,7 @@ if (CC.initPage('journals')) {
   (async () => {
     try {
       myRole = await CC.loadRole();
+      closedThrough = await CC.loadClosedThrough();
       if (!CC.can(myRole, 'write')) CC.lockBtn($('newBtn'), '你的角色只能查看,不能記帳');
       await loadLookups();
       await reload();

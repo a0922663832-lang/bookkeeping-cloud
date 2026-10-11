@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 儀表板</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -32,6 +32,7 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
   <div id="content" class="d-none">
     <h4 class="mb-3" id="monthLabel">本月概覽</h4>
     <div id="pageMsg"></div>
+    <div id="pendingNotice"></div>
 
     <div class="row g-3">
       <div class="col-md-3"><div class="kpi-card">
@@ -55,7 +56,7 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
     <div class="section-card">
       <h6 class="mb-3">近 6 月趨勢</h6>
       <canvas id="trendChart" height="90"></canvas>
-      <div id="chartMsg" class="text-muted small d-none">趨勢圖暫時畫不出來(圖表元件沒載入),上面的數字不受影響。</div>
+      <div id="chartMsg" class="text-muted small d-none">圖表載不出來(店內連不上外網),上面的數字不受影響。</div>
     </div>
 
     <div class="row g-3 mt-1">
@@ -74,7 +75,7 @@ body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans 
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous"></script>
 <script src="/common.js"></script>
 <script>
 if (CC.initPage('dashboard')) {
@@ -97,6 +98,7 @@ if (CC.initPage('dashboard')) {
       pE.classList.remove('pos', 'neg');
       pE.classList.add(profit >= 0 ? 'pos' : 'neg');
       $('kpiBalance').textContent = fmtMoney(d.total_balance);
+      CC.pendingNotice($('pendingNotice'), d.pending);
 
       $('accountsList').innerHTML = (d.accounts || []).length
         ? d.accounts.map(a => `<div class="acct-row"><span>${esc(a.name)}<span class="acct-type-badge">${esc(CC.ACCT_TYPE_NAME[a.type] || '其他')}</span></span><strong>${fmtMoney(a.current_balance)}</strong></div>`).join('')
@@ -110,7 +112,10 @@ if (CC.initPage('dashboard')) {
           }).join('') + (total > 4 ? `<div class="text-muted pt-2">還有 ${esc(total - 4)} 筆,到「待審」查看</div>` : '')
         : '<div class="text-success">✓ 沒有待審項目</div>';
 
-      if (window.Chart) {
+      // 外網元件沒載入(或畫圖出錯)時,圖表位置改顯示白話說明,其餘照常
+      let chartOk = typeof Chart !== 'undefined';
+      if (chartOk) {
+        try {
         if (trendChart) trendChart.destroy();
         trendChart = new Chart($('trendChart'), {
           type: 'line',
@@ -124,10 +129,10 @@ if (CC.initPage('dashboard')) {
           },
           options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
         });
-      } else {
-        $('trendChart').classList.add('d-none');
-        $('chartMsg').classList.remove('d-none');
+        } catch (_) { chartOk = false; }
       }
+      $('trendChart').classList.toggle('d-none', !chartOk);
+      $('chartMsg').classList.toggle('d-none', chartOk);
 
       $('loading').classList.add('d-none');
       $('content').classList.remove('d-none');

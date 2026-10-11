@@ -236,6 +236,8 @@
       '.cc-result.ok{background:#d1e7dd;color:#0a3622}',
       '.cc-result.bad{background:#fdeae8;color:#a94a3a}',
       '.cc-result .cc-x{position:absolute;right:8px;top:4px;border:0;background:transparent;font-size:18px;line-height:1;color:inherit;cursor:pointer}',
+      '.cc-notice{background:#fff8e1;border:1px solid #ffeaa7;color:#7a5d00;border-radius:8px;padding:9px 14px;font-size:13px;line-height:1.6;margin-bottom:12px}',
+      '.cc-notice a{color:#6a3a8a;font-weight:600;margin-left:2px}',
       '#cc-toasts{position:fixed;top:80px;right:20px;z-index:19000;display:flex;flex-direction:column;gap:8px;max-width:min(92vw,360px)}',
       '.cc-toast{padding:12px 34px 12px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.12);font-size:13px;position:relative;line-height:1.6}',
       '.cc-toast.ok{background:#d1e7dd;color:#0a3622}',
@@ -393,6 +395,21 @@
   function loadRole() {
     return getBook().then(function (r) { return r.my_role || null; }).catch(function () { return null; });
   }
+  // 關帳日:'YYYY-MM-DD' 或 null(沒關帳)。後端若把日期帶成 T…Z,一律用台北時間切日
+  function closedOf(r) {
+    var v = r && r.book ? r.book.closed_through : (r ? r.closed_through : null);
+    if (v == null || v === '') return null;
+    return fmtDate(v) || null;
+  }
+  function loadClosedThrough(force) {
+    return getBook(force).then(closedOf).catch(function () { return null; });
+  }
+  // 這個日期是不是落在關帳日(含)以前;兩邊都是 YYYY-MM-DD,直接比字串
+  function isClosedDate(date, closed) {
+    if (!closed || !date) return false;
+    var d = fmtDate(date);
+    return !!d && d <= closed;
+  }
   // action: 'write' = 記帳員以上;'admin' = 管理員以上。角色不明時不擋(後端會擋)
   function can(role, action) {
     if (!role) return true;
@@ -405,6 +422,58 @@
     btn.disabled = true;
     btn.title = reason;
     btn.classList.add('disabled');
+  }
+
+  // ───────────────────────── 報表上方的「還有待審沒算進來」提示 ─────────────────────────
+  // pending:後端回的 {count,total}。undefined(後端舊版沒這個欄位)和 count=0 都不顯示;null = 後端查不到
+  function pendingNotice(el, pending) {
+    if (!el) return;
+    injectStyle();
+    el.innerHTML = '';
+    if (pending === undefined) return;
+    if (pending === null) {
+      el.appendChild(mk('div', 'cc-notice', '待審筆數暫時查不到,下面的數字可能還沒包含待審的單。'));
+      return;
+    }
+    var n = Number(pending && pending.count);
+    if (!isFinite(n) || n <= 0) return;
+    var box = mk('div', 'cc-notice');
+    box.appendChild(document.createTextNode('這段期間還有 ' + n + ' 筆、合計 ' + fmtMoney(pending.total) + ' 在待審,沒有算進下面的數字 → '));
+    var a = mk('a', '', '去待審');
+    a.href = '/pending';
+    box.appendChild(a);
+    el.appendChild(box);
+  }
+
+  // ───────────────────────── 防重複送出的單號 / 視窗備援 ─────────────────────────
+  // 「記一筆」每開一張新表單產一個;同一張表單重送要用同一個(後端靠它擋掉重複的一筆)
+  function newRequestId() {
+    var id;
+    try {
+      if (global.crypto && global.crypto.randomUUID) id = global.crypto.randomUUID();
+    } catch (_) { id = null; }
+    if (!id) id = Date.now() + '-' + Math.random();
+    return String(id).slice(0, 64);
+  }
+
+  // 外網元件(Bootstrap)沒載入時,視窗改用最陽春的備援,頁面其餘功能照常
+  function makeModal(el) {
+    if (global.bootstrap && global.bootstrap.Modal) return new global.bootstrap.Modal(el);
+    var dlg = el.querySelector('.modal-dialog');
+    var content = el.querySelector('.modal-content');
+    var self = {
+      show: function () {
+        el.style.cssText = 'display:block;position:fixed;top:0;left:0;right:0;bottom:0;overflow:auto;background:rgba(0,0,0,.45);z-index:1055';
+        if (dlg) dlg.style.cssText = 'max-width:640px;margin:24px auto;padding:0 12px';
+        if (content) content.style.cssText = 'background:#fff;border-radius:12px;padding:16px';
+        el.classList.add('show');
+      },
+      hide: function () { el.classList.remove('show'); el.style.display = 'none'; },
+    };
+    Array.prototype.forEach.call(el.querySelectorAll('[data-bs-dismiss="modal"]'), function (b) {
+      b.addEventListener('click', function () { self.hide(); });
+    });
+    return self;
   }
 
   // ───────────────────────── 複式分錄(待審頁用) ─────────────────────────
@@ -527,6 +596,8 @@
   CC.api = api; CC.ask = ask; CC.askText = askText; CC.inlineResult = inlineResult; CC.toast = toast;
   CC.buildNav = buildNav; CC.initPage = initPage; CC.refreshBadge = refreshBadge; CC.onResume = onResume;
   CC.getBook = getBook; CC.loadRole = loadRole; CC.can = can; CC.lockBtn = lockBtn;
+  CC.loadClosedThrough = loadClosedThrough; CC.closedOf = closedOf; CC.isClosedDate = isClosedDate;
+  CC.pendingNotice = pendingNotice; CC.newRequestId = newRequestId; CC.makeModal = makeModal;
   CC.legGap = legGap; CC.pendingAmount = pendingAmount; CC.friendlyError = friendlyError;
   CC.go = go; CC.logout = logout; CC.deviceId = deviceId; CC.getToken = getToken; CC.getUser = getUser;
   CC.ROLE_NAME = ROLE_NAME; CC.ACCT_TYPE_NAME = ACCT_TYPE_NAME; CC.SUBJ_TYPE_NAME = SUBJ_TYPE_NAME;

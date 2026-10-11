@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 設定</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -91,6 +91,27 @@ table.mode-table td{padding:11px 10px;border-bottom:1px solid #f0ece4}
       </div>
     </div>
 
+    <!-- 關帳 -->
+    <div class="section-card" id="closeCard">
+      <div class="section-title">關帳</div>
+      <div class="section-sub">
+        關帳日以前的帳不能再改;要改先把日期往前調。已經交給會計師的月份,建議關到那個月的月底。
+      </div>
+      <div id="closeOwner" class="d-none">
+        <div class="row g-3 align-items-end">
+          <div class="col-md-5">
+            <label class="field-label">關帳到</label>
+            <input type="date" class="form-control" id="fClosed">
+          </div>
+          <div class="col-md-4">
+            <button class="btn btn-primary w-100" id="saveCloseBtn">🔒 儲存關帳日</button>
+          </div>
+        </div>
+        <div class="soon">把日期清空再儲存,就是取消關帳。</div>
+      </div>
+      <div id="closeText" class="d-none"></div>
+    </div>
+
     <!-- 記帳模式(只顯示) -->
     <div class="section-card" id="modeCard">
       <div class="section-title">各來源怎麼入帳</div>
@@ -172,7 +193,18 @@ if (CC.initPage('settings')) {
       CC.lockBtn($('saveBookBtn'), '只有帳本擁有者或管理員能修改');
     }
 
+    renderClose(true);
     renderModes();
+  }
+
+  // 關帳:只有帳本擁有者看得到日期欄和儲存鈕,其他人只看文字。refreshInput = false 時不動正在輸入的欄位
+  function renderClose(refreshInput) {
+    const isOwner = myRole === 'owner';
+    const closed = CC.closedOf({ book: bookData });
+    $('closeOwner').classList.toggle('d-none', !isOwner);
+    $('closeText').classList.toggle('d-none', isOwner);
+    $('closeText').textContent = closed ? `目前關帳到 ${closed}(只有帳本擁有者能修改)` : '尚未關帳(只有帳本擁有者能設定)';
+    if (isOwner && refreshInput) $('fClosed').value = closed || '';
   }
 
   // 唯讀表:每個來源目前的真實處理方式
@@ -211,10 +243,30 @@ if (CC.initPage('settings')) {
     }
   }
 
+  async function saveClosed() {
+    const card = $('closeCard');
+    const v = $('fClosed').value.trim();
+    if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) { inlineResult(card, false, '日期格式不對,請重新選一次'); return; }
+    const btn = $('saveCloseBtn'); btn.disabled = true; btn.textContent = '儲存中...';
+    inlineResult(card, true, '');
+    try {
+      const r = await api(`/B/${BOOK}`, { method: 'PATCH', body: { closed_through: v || null } });
+      bookData = Object.assign({}, bookData, r.book || {}, { closed_through: v || null });
+      renderClose(false);
+      inlineResult(card, true, v ? `✓ 已關帳到 ${v}` : '✓ 已取消關帳');
+    } catch (e) {
+      if (e.handled) return;
+      inlineResult(card, false, '儲存失敗:' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = '🔒 儲存關帳日';
+    }
+  }
+
   $('saveBookBtn').addEventListener('click', saveBookData);
+  $('saveCloseBtn').addEventListener('click', saveClosed);
   // 切回來時只更新下面的唯讀表,不動上面可能正在輸入的欄位
   CC.onResume(() => {
-    CC.getBook(true).then((r) => { bookData = r.book; renderModes(); }).catch(() => {});
+    CC.getBook(true).then((r) => { bookData = r.book; renderClose(false); renderModes(); }).catch(() => {});
   });
   load();
 }

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 報表</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -83,6 +83,8 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
       <div id="mMsg"></div>
       <div id="mLoading" class="text-center text-muted py-4">載入中...</div>
       <div id="mContent" class="d-none">
+        <div class="section-title">月報 <em id="mTitleMonth"></em> <span id="mClosedTag" class="badge bg-secondary d-none">🔒 已關帳</span></div>
+        <div id="mPending"></div>
         <div class="row g-3 mb-3">
           <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">收入合計</div><div class="kpi-value pos" id="mKpiIncome">—</div><div class="kpi-sub" id="mKpiIncomeSub">—</div></div></div>
           <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">成本合計</div><div class="kpi-value neg" id="mKpiCost">—</div><div class="kpi-sub" id="mKpiCostSub">—</div></div></div>
@@ -118,6 +120,7 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
       <div id="yMsg"></div>
       <div id="yLoading" class="text-center text-muted py-4">載入中...</div>
       <div id="yContent" class="d-none">
+        <div id="yPending"></div>
         <div class="row g-3 mb-3">
           <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年收入</div><div class="kpi-value pos" id="yKpiIncome">—</div></div></div>
           <div class="col-md-3"><div class="kpi-card"><div class="kpi-label">全年成本</div><div class="kpi-value neg" id="yKpiCost">—</div></div></div>
@@ -127,6 +130,7 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
         <div class="section-card" style="margin-bottom:0;margin-top:18px;padding:18px">
           <div class="section-title">12 月趨勢</div>
           <canvas id="yTrendChart" height="80"></canvas>
+          <div id="yChartMsg" class="text-muted small d-none">圖表載不出來(店內連不上外網),上面的數字不受影響。</div>
         </div>
         <div class="row g-3 mt-1">
           <div class="col-md-4">
@@ -193,7 +197,7 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous"></script>
 <script src="/common.js"></script>
 <script>
 if (CC.initPage('reports')) {
@@ -261,6 +265,9 @@ if (CC.initPage('reports')) {
     $('mKpiCostSub').textContent = `${r.cost.by_subject.length} 個科目`;
     $('mKpiExpenseSub').textContent = `${r.expense.by_subject.length} 個科目`;
     $('mKpiCnt').textContent = `${r.transaction_count} 筆交易`;
+    $('mTitleMonth').textContent = `${r.year}-${String(r.month).padStart(2, '0')}`;
+    $('mClosedTag').classList.toggle('d-none', r.closed !== true);
+    CC.pendingNotice($('mPending'), r.pending);
     renderBreakdownTable('mIncomeBody', r.income.by_subject, r.income.total, 'pos');
     renderBreakdownTable('mCostBody', r.cost.by_subject, r.cost.total, 'neg');
     renderBreakdownTable('mExpenseBody', r.expense.by_subject, r.expense.total, 'neg');
@@ -329,8 +336,13 @@ if (CC.initPage('reports')) {
     pEl.textContent = fmtMoney(profit);
     pEl.className = 'kpi-value ' + (profit >= 0 ? 'pos' : 'neg');
 
-    if (!window.Chart) {
-      inlineResult($('yMsg'), false, '圖表元件沒載入,所以趨勢圖和圓餅圖暫時畫不出來;上面的數字不受影響。');
+    CC.pendingNotice($('yPending'), r.pending);
+
+    // 外網元件沒載入時:圖表位置改顯示白話說明,圖例照常列出,上面的數字不受影響
+    const chartOk = typeof Chart !== 'undefined';
+    ['yTrendChart', 'yIncomePie', 'yCostPie', 'yExpensePie'].forEach((id) => $(id).classList.toggle('d-none', !chartOk));
+    $('yChartMsg').classList.toggle('d-none', chartOk);
+    if (!chartOk) {
       renderLegendOnly('yIncomeLegend', r.income_breakdown);
       renderLegendOnly('yCostLegend', r.cost_breakdown);
       renderLegendOnly('yExpenseLegend', r.expense_breakdown);

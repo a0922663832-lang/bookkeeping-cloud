@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>記帳雲 · 待審入帳</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
 <style>
 body{background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
 .navbar{background:#fff!important}
@@ -81,6 +81,7 @@ if (CC.initPage('pending')) {
   let offset = 0;
   let total = 0;
   let myRole = null;
+  let closedThrough = null;   // 關帳日 YYYY-MM-DD(沒關帳 = null)
   const selected = new Set();
 
   function typeName(t) { return ({ income: '收入', expense: '支出', transfer: '轉帳', reclassify: '重分類', composite: '複式記帳' })[t] || '其他'; }
@@ -120,11 +121,14 @@ if (CC.initPage('pending')) {
     const legsHtml = isComposite && (j.legs || []).length > 0 ? renderLegs(j.legs) : '';
     const evtName = CC.pendingEventName(p);
     const evt = evtName ? `<span class="badge bg-secondary ms-1">${esc(evtName)}</span>` : '';
-    const check = canActions && mayAct ? `<input type="checkbox" class="pj-check" data-pj-check="${esc(p.id)}" aria-label="勾選這一筆"${selected.has(p.id) ? ' checked' : ''}>` : '';
+    // 單據日期落在關帳日以前:核准鈕灰掉寫原因(退回還是可以),也不給勾批次
+    const closedDay = canActions && CC.isClosedDate(j.date, closedThrough);
+    const check = canActions && mayAct && !closedDay ? `<input type="checkbox" class="pj-check" data-pj-check="${esc(p.id)}" aria-label="勾選這一筆"${selected.has(p.id) ? ' checked' : ''}>` : '';
     const lockTitle = '你的角色只能查看,不能核准或退回';
+    const approveLock = !mayAct ? lockTitle : closedDay ? `這筆的日期在 ${closedThrough} 以前已關帳,不能核准;要核准請老闆先到設定頁把關帳日往前調` : '';
     const actions = canActions ? `
         <div class="pj-actions">
-          <button class="btn btn-success btn-sm me-1" data-act="approve" data-id="${esc(p.id)}"${mayAct ? '' : ` disabled title="${lockTitle}"`}>✓ 核准</button>
+          <button class="btn btn-success btn-sm me-1" data-act="approve" data-id="${esc(p.id)}"${approveLock ? ` disabled data-locked="1" title="${esc(approveLock)}"` : ''}>✓ 核准</button>
           <button class="btn btn-outline-danger btn-sm" data-act="reject" data-id="${esc(p.id)}"${mayAct ? '' : ` disabled title="${lockTitle}"`}>✗ 退回</button>
         </div>` : '';
     return `<div class="pj-row" id="pj-${esc(p.id)}" data-id="${esc(p.id)}">
@@ -217,7 +221,7 @@ if (CC.initPage('pending')) {
     selected.delete(Number(card.dataset.id));
   }
   function setCardBusy(card, busy) {
-    card.querySelectorAll('[data-act]').forEach(b => { b.disabled = busy; });
+    card.querySelectorAll('[data-act]').forEach(b => { b.disabled = busy || b.dataset.locked === '1'; });
   }
 
   async function approveOne(id) {
@@ -328,10 +332,13 @@ if (CC.initPage('pending')) {
 
   // 平板放在背景很久再切回來:沒有正在看的結果訊息、也沒勾選時才自動重抓
   CC.onResume(() => {
-    if (selected.size === 0 && !document.querySelector('#list .cc-result')) load();
+    if (selected.size === 0 && !document.querySelector('#list .cc-result')) {
+      // 關帳日可能剛被老闆改過,先重抓再畫
+      CC.loadClosedThrough(true).then((c) => { closedThrough = c; load(); });
+    }
   });
 
-  CC.loadRole().then((role) => { myRole = role; load(); });
+  CC.loadRole().then(async (role) => { myRole = role; closedThrough = await CC.loadClosedThrough(); load(); });
 }
 </script>
 </body>

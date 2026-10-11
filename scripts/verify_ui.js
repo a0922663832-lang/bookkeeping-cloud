@@ -55,12 +55,15 @@ function commonSource() {
 // ───────────────── 假後端 ─────────────────
 function makeBackend(opts) {
   const sc = Object.assign({
-    role: 'owner', pendingTotal: null, pendingBig: false, noChart: false,
+    role: 'owner', pendingTotal: null, pendingBig: false, noChart: false, noBootstrap: false,
+    noSortable: false, closedThrough: null, monthClosed: undefined, postAbortFirst: 0, guardByName: false, extraAccounts: false,
     rosterFail: 0, loginMode: 'ok', cpFail: false, reconFail: false, reconRan: true,
     accountPatchNeedsConfirm: true, delayCp: 0, unauthorizedOn: null,
   }, opts || {});
   const calls = [];
   const state = { sc, calls };
+  // 報表回應有沒有「pending」欄位:opts 有寫 pending 才回(沒寫 = 模擬後端舊版沒這個欄位);可以是 {count,total} 或 null
+  const pendingField = opts && 'pending' in opts ? { pending: opts.pending } : {};
 
   const xssSummary = '<img src=x onerror="window.__xss=1">客人訂金';
   const salary = {
@@ -121,6 +124,15 @@ function makeBackend(opts) {
     { id: 5, type: 'cash', name: '現金袋', initial_balance: 0, current_balance: -300, display_order: 10, is_active: true, linked_counterparty_id: 12 },
     { id: 6, type: 'liability', name: '應付帳款-<b>X</b>', initial_balance: 0, current_balance: 800, display_order: 20, is_active: true, linked_counterparty_id: null },
   ];
+  // 考勤包 5 新增的三個薪資負債科目(名字要與主 repo PAYROLL_*_REF 一字不差,第三個是全形破折號 U+2014)
+  state.guardNames = ['現金袋', '應付代扣稅款', '應付勞退自提', '其他應付款—員工'];
+  if (sc.extraAccounts) {
+    state.accounts.push(
+      { id: 7, type: 'liability', name: '應付代扣稅款', initial_balance: 0, current_balance: 0, display_order: 30, is_active: true, linked_counterparty_id: null },
+      { id: 8, type: 'liability', name: '應付勞退自提', initial_balance: 0, current_balance: 0, display_order: 40, is_active: true, linked_counterparty_id: null },
+      { id: 9, type: 'liability', name: '其他應付款—員工', initial_balance: 0, current_balance: 0, display_order: 50, is_active: true, linked_counterparty_id: null },
+    );
+  }
   state.cps = [
     { id: 12, type: 'expense', name: '應付廠商', display_order: 10, is_active: true, is_temporary: false, promote_count: 3 },
     { id: 13, type: 'expense', name: '臨時<s>攤商</s>', display_order: 20, is_active: true, is_temporary: true, promote_count: 5 },
@@ -129,6 +141,7 @@ function makeBackend(opts) {
   state.book = {
     code: 'NEST0001', name: '花現鳥巢', company_name: '花現鳥巢餐廳有限公司', tax_id: '12345678', currency: 'TWD', fiscal_year_start_month: 1,
     posting_mode: 'review',
+    closed_through: sc.closedThrough,
     posting_mode_per_source: { leo_pos: { pos_shift_settled: 'auto', pos_deposit_offset: 'review' }, leo_expense: { expense_created: 'auto' }, leo_inline: 'auto' },
   };
 
@@ -159,7 +172,10 @@ function makeBackend(opts) {
     const json = (status, obj) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(obj) });
 
     if (method === 'GET' && PAGES[p]) {
-      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: fs.readFileSync(path.join(PUB, PAGES[p] + '.html'), 'utf8') });
+      // 外網元件換成假件後過不了 integrity,所以餵頁面時把 integrity / crossorigin 屬性拿掉(真的屬性由第 0 節靜態檢查)
+      const html = fs.readFileSync(path.join(PUB, PAGES[p] + '.html'), 'utf8')
+        .replace(/\s+integrity="[^"]*"/g, '').replace(/\s+crossorigin="[^"]*"/g, '');
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
     }
     if (p === '/common.js') return route.fulfill({ status: 200, contentType: 'application/javascript', body: commonSource() });
 
@@ -185,26 +201,26 @@ function makeBackend(opts) {
     if (p === B && method === 'PATCH') { Object.assign(state.book, body || {}); return json(200, { book: state.book }); }
 
     if (p === B + '/reports/dashboard') {
-      return json(200, {
+      return json(200, Object.assign({
         month: '2026-10', this_month: { income: 12000, expense: 15000, profit: -3000 }, total_balance: -300,
         accounts: [{ name: '現金袋<img src=x onerror=window.__xss=7>', type: 'cash', current_balance: -300 }, { name: '玉山銀行', type: 'bank', current_balance: 5000 }],
         trend_6m: [{ month: '2026-09', income: 1, expense: 2, profit: -1 }, { month: '2026-10', income: 12000, expense: 15000, profit: -3000 }],
-      });
+      }, pendingField));
     }
     if (p === B + '/reports/monthly') {
-      return json(200, {
+      return json(200, Object.assign({
         year: 2026, month: 10, profit: -300, transaction_count: 7,
         income: { total: 1000, by_subject: [{ code: '4101', name: '=HYPERLINK("http://x","點我")', amount: '1200.00' }, { code: '4197', name: '銷貨退回', amount: '-200.00' }] },
         cost: { total: 0, by_subject: [] },
         expense: { total: 1300, by_subject: [{ code: '6901', name: '雜費<img src=x onerror=window.__xss=8>', amount: '1300.00' }] },
-      });
+      }, pendingField, sc.monthClosed === undefined ? {} : { closed: sc.monthClosed }));
     }
     if (p === B + '/reports/yearly') {
-      return json(200, {
+      return json(200, Object.assign({
         year: 2026, summary: { total_income: 1, total_cost: 0, total_expense: 2, total_profit: -1 },
         monthly: [{ month: 10, income: 1, expense: 2, profit: -1 }],
         income_breakdown: [{ code: '4101', name: '菜色', amount: 1, percent: 100 }], cost_breakdown: [], expense_breakdown: [],
-      });
+      }, pendingField));
     }
     if (p === B + '/reports/counterparties') {
       if (sc.cpFail) return json(500, { error: 'boom stack trace' });
@@ -244,7 +260,11 @@ function makeBackend(opts) {
 
     // ── 明細 ──
     if (p === B + '/journals' && method === 'GET') return json(200, { journals: state.journals, count: state.journals.length });
-    if (p === B + '/journals' && method === 'POST') return json(200, { journal: { id: 99 } });
+    if (p === B + '/journals' && method === 'POST') {
+      // 模擬平板網路閃一下:前幾次直接斷線(請求已記在 calls 裡,後端其實沒收到)
+      if (sc.postAbortFirst > 0) { sc.postAbortFirst--; return route.abort('failed'); }
+      return json(200, { journal: { id: 99 } });
+    }
     m = p.match(/^\/B\/NEST0001\/journals\/(\d+)\/legs$/);
     if (m) return json(200, { journal_id: Number(m[1]), is_composite: true, legs: state.legs[m[1]] || [] });
     m = p.match(/^\/B\/NEST0001\/journals\/(\d+)\/reverse$/);
@@ -267,7 +287,10 @@ function makeBackend(opts) {
     if (p === B + '/accounts' && method === 'GET') return json(200, { accounts: state.accounts });
     m = p.match(/^\/B\/NEST0001\/accounts\/(\d+)$/);
     if (m && method === 'PATCH') {
-      if (sc.accountPatchNeedsConfirm && !(body && body.confirm)) {
+      // guardByName:像真的後端一樣,只有「名字在守衛名單裡」的帳戶改名才要二次確認
+      const acct = state.accounts.find((a) => a.id === Number(m[1]));
+      const needs = sc.guardByName ? !!(acct && state.guardNames.includes(acct.name)) : sc.accountPatchNeedsConfirm;
+      if (needs && !(body && body.confirm)) {
         return json(409, { error: '這個帳戶有 128 筆記錄在用,POS 收班每天會用名字找它;改名後推送會失敗。確定要改請再按一次。', usage: { journals: 128, pending: 2, used_by_posting: true }, needs_confirm: true });
       }
       return json(200, { account: { id: Number(m[1]) } });
@@ -303,11 +326,15 @@ async function openPage(browser, backend, pagePath, o) {
     const u = route.request().url();
     if (u.endsWith('.css')) return route.fulfill({ status: 200, contentType: 'text/css', body: '.d-none{display:none!important}.modal{display:none}.modal.show{display:block}' });
     if (/bootstrap/.test(u)) {
+      if (backend.sc.noBootstrap) return route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* bootstrap blocked */' });
       return route.fulfill({ status: 200, contentType: 'application/javascript', body: 'window.bootstrap={Modal:function(el){this.show=function(){el.classList.add("show")};this.hide=function(){el.classList.remove("show")}}};' });
     }
     if (/chart/.test(u)) {
       if (backend.sc.noChart) return route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* chart blocked */' });
       return route.fulfill({ status: 200, contentType: 'application/javascript', body: 'window.__charts=[];window.Chart=function(el,cfg){window.__charts.push(cfg);this.destroy=function(){}};' });
+    }
+    if (/sortable/i.test(u)) {
+      if (backend.sc.noSortable) return route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* sortable blocked */' });
     }
     if (/sortable/i.test(u)) return route.fulfill({ status: 200, contentType: 'application/javascript', body: 'window.Sortable={create:function(){return{destroy:function(){}}}};' });
     return route.fulfill({ status: 404, body: '' });
@@ -347,6 +374,28 @@ async function main() {
     check('八頁 + common.js 沒有任何系統小視窗字樣', nativeHits.length === 0, nativeHits);
     check('沒有 toISOString(日期一律台北時間切日)', isoHits.length === 0, isoHits);
     check('public/ 全部 LF(沒有 CR)', crHits.length === 0, crHits);
+    {
+      // 外部元件(bootstrap / chart.js / sortablejs)每個標籤都要帶 integrity + crossorigin,且 hash 與版本一一對上
+      // hash 是 2026-10-11 用 curl 抓該版本檔、openssl sha384 現算的;改版本要連 hash 一起重算
+      const CDN_HASH = {
+        'bootstrap@5.3.2/dist/css/bootstrap.min.css': 'sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN',
+        'bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js': 'sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL',
+        'chart.js@4.4.1/dist/chart.umd.min.js': 'sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4',
+        'sortablejs@1.15.2/Sortable.min.js': 'sha384-BSxuMLxX+FCbTdYec3TbXlnMGEEM2QXTFdtDaveen71o+jswm2J36+xFqp8k4VHM',
+      };
+      const bad = [];
+      let tags = 0;
+      for (const f of allFiles.filter((x) => x.endsWith('.html'))) {
+        const txt = fs.readFileSync(path.join(PUB, f), 'utf8');
+        for (const tag of txt.match(/<(?:script|link)\b[^>]*https:\/\/cdn\.[^>]*>/g) || []) {
+          tags++;
+          const um = /https:\/\/cdn\.jsdelivr\.net\/npm\/([^"]+)"/.exec(tag);
+          const im = /integrity="([^"]+)"/.exec(tag);
+          if (!um || !im || CDN_HASH[um[1]] !== im[1] || !/crossorigin="anonymous"/.test(tag)) bad.push(f + ' ← ' + tag.slice(0, 120));
+        }
+      }
+      check(`八頁外部元件共 ${tags} 個標籤,全部帶 integrity + crossorigin,且 hash 與版本對得上`, tags === 13 && bad.length === 0, bad);
+    }
     for (const f of allFiles) {
       const txt = fs.readFileSync(path.join(PUB, f), 'utf8');
       let ok = true, msg = '';
@@ -582,6 +631,31 @@ async function main() {
       await t.context.close();
     }
 
+    {
+      // 關帳:單據日期 ≤ 關帳日 → 核准鈕灰掉寫原因(退回還是可以)
+      const b = makeBackend({ closedThrough: '2026-10-06' });
+      const t = await openPage(browser, b, '/pending');
+      const P = t.page;
+      await P.waitForSelector('#pj-1');
+      const a1 = await P.$eval('#pj-1 [data-act=approve]', (e) => ({ d: e.disabled, t: e.title }));
+      check('關帳(10/06):10/05 的薪資單核准鈕灰掉,title 寫「已關帳」與關帳日', a1.d && /2026-10-06/.test(a1.t) && /已關帳/.test(a1.t) && !/closed_through|409/.test(a1.t), a1);
+      check('關帳:退回鈕還是可以按、批次勾選框拿掉', (await P.isEnabled('#pj-1 [data-act=reject]')) && (await P.$$('[data-pj-check="1"]')).length === 0);
+      check('關帳:日期在關帳日之後的單(10/08 支出)核准鈕可按、有勾選框', (await P.isEnabled('#pj-4 [data-act=approve]')) && (await P.$$('[data-pj-check="4"]')).length === 1 && (await P.getAttribute('#pj-4 [data-act=approve]', 'title')) === null);
+      await P.dispatchEvent('#pj-1 [data-act=approve]', 'click');
+      await sleep(150);
+      check('關帳:硬點灰掉的核准鈕,不跳框、不送核准請求', !(await P.$('.cc-dlg')) && callsTo(b, 'POST', /pending-journals\/1\/approve$/).length === 0);
+      check('關帳:待審頁沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+      // 邊界:關帳日剛好是 10/05 → 10/05 的單算已關帳;關帳日 10/04 → 10/05 的單還能核准
+      for (const [ct, locked] of [['2026-10-05', true], ['2026-10-04', false]]) {
+        const bb = makeBackend({ closedThrough: ct });
+        const tt = await openPage(browser, bb, '/pending');
+        await tt.page.waitForSelector('#pj-1');
+        check('關帳邊界:關帳日 ' + ct + ' → 10/05 的單核准鈕' + (locked ? '灰掉(≤ 含當天)' : '可按'), (await tt.page.isDisabled('#pj-1 [data-act=approve]')) === locked);
+        await tt.context.close();
+      }
+    }
+
     // ============ 5. 401 ============
     section('5. 401:只清 token,保留 lastEmpId,原因帶到登入頁');
     {
@@ -629,7 +703,28 @@ async function main() {
       const t2 = await openPage(browser, b2, '/dashboard');
       await t2.page.waitForSelector('#content:not(.d-none)');
       check('圖表元件沒載入:整頁仍顯示,有白話提示,不顯示 Chart is not defined', await t2.page.isVisible('#chartMsg') && !/Chart is not defined/.test(await t2.page.textContent('body')));
+      const body2 = await t2.page.innerText('body');
+      check('圖表元件沒載入:KPI 數字都有值(本月收入 $12,000、利潤 -$3,000)', (await t2.page.textContent('#kpiIncome')) === '$12,000' && (await t2.page.textContent('#kpiProfit')) === '-$3,000', [await t2.page.textContent('#kpiIncome'), await t2.page.textContent('#kpiProfit')]);
+      check('圖表元件沒載入:圖表位置寫「圖表載不出來(店內連不上外網),上面的數字不受影響」,且不出現「載入失敗」', /圖表載不出來\(店內連不上外網\),上面的數字不受影響/.test(await t2.page.textContent('#chartMsg')) && !/載入失敗/.test(body2) && !(await t2.page.isVisible('#trendChart')), body2.slice(0, 200));
+      check('圖表元件沒載入:帳戶清單、待審清單照常、沒有 JS 錯誤', /玉山銀行/.test(await t2.page.textContent('#accountsList')) && /薪資/.test(await t2.page.textContent('#pendingList')) && t2.errors.length === 0, t2.errors);
       await t2.context.close();
+      // 報表上方的「還有待審沒算進來」提示(儀表板):有 / 零筆 / 查不到 / 後端舊版沒這個欄位
+      for (const [label, opt, expectFn] of [
+        ['3 筆 $12,820', { pending: { count: 3, total: 12820 } }, (tx) => /還有 3 筆、合計 \$12,820 在待審,沒有算進下面的數字/.test(tx) && /去待審/.test(tx)],
+        ['0 筆', { pending: { count: 0, total: 0 } }, (tx) => tx === ''],
+        ['查不到(null)', { pending: null }, (tx) => /待審筆數暫時查不到/.test(tx)],
+        ['後端舊版沒這個欄位', {}, (tx) => tx === ''],
+      ]) {
+        const bp = makeBackend(opt);
+        const tp = await openPage(browser, bp, '/dashboard');
+        await tp.page.waitForSelector('#content:not(.d-none)');
+        const tx = (await tp.page.textContent('#pendingNotice')).trim();
+        check('儀表板待審提示 · ' + label, expectFn(tx) && tp.errors.length === 0, [tx, tp.errors]);
+        if (label.startsWith('3 筆')) {
+          check('儀表板待審提示:有連到 /pending、是淡黃提示條、文字沒有欄位名', (await tp.page.getAttribute('#pendingNotice a', 'href')) === '/pending' && (await tp.page.locator('#pendingNotice .cc-notice').count()) === 1 && !/pending|count|total/.test(tx));
+        }
+        await tp.context.close();
+      }
       const b3 = makeBackend({ unauthorizedOn: 'NOPE' });
       const orig = b3.handler;
       b3.handler = async (route) => (/reports\/dashboard/.test(route.request().url()) ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'date/time field value out of range: "2026-11-31"' }) }) : orig(route));
@@ -685,6 +780,7 @@ async function main() {
       await P.waitForFunction(() => !document.getElementById('journalModal').classList.contains('show') || !document.getElementById('jmError').classList.contains('d-none'));
       const pa = callsTo(b, 'PATCH', /journals\/1$/);
       check('編輯儲存:PATCH 沒有帶 type 欄位,金額 650', pa.length === 1 && !('type' in pa[0].body) && pa[0].body.amount === 650, pa);
+      check('編輯儲存:不帶防重複單號(那是「新增」才用的)', !('client_request_id' in pa[0].body), pa);
       check('編輯儲存後:接回該列「已儲存」', /已儲存/.test(await P.textContent('#rows')));
 
       // 詳情
@@ -754,6 +850,105 @@ async function main() {
       await t.context.close();
     }
 
+    {
+      // 記一筆:網路閃一下(請求沒送到)→ 重按送出,兩次帶同一個防重複單號;成功後再開新表單才換新
+      const b = makeBackend({ postAbortFirst: 1 });
+      const t = await openPage(browser, b, '/journals');
+      const P = t.page;
+      await P.waitForSelector('#rows tr[data-id="1"]');
+      const fillForm = async () => {
+        await P.click('#newBtn');
+        await P.selectOption('#jmSubject', '2');
+        await P.selectOption('#jmOut', '5');
+        await P.fill('#jmAmount', '100');
+      };
+      const modalOpen = () => P.evaluate(() => document.getElementById('journalModal').classList.contains('show'));
+      await fillForm();
+      await P.click('#jmSaveBtn');
+      await P.waitForSelector('#jmError:not(.d-none)');
+      check('送出時網路斷線:表單留著不關、顯示白話「連線有問題」', /連線有問題/.test(await P.textContent('#jmError')) && await modalOpen(), await P.textContent('#jmError'));
+      await P.click('#jmSaveBtn');
+      await P.waitForFunction(() => !document.getElementById('journalModal').classList.contains('show'));
+      let posts = callsTo(b, 'POST', /\/journals$/);
+      const id1 = posts[0] && posts[0].body && posts[0].body.client_request_id;
+      check('重按送出:兩次 POST 帶同一個防重複單號(有值、≤ 64 字)', posts.length === 2 && !!id1 && id1 === posts[1].body.client_request_id && id1.length <= 64, posts.map((p) => p.body));
+      await fillForm();
+      await P.click('#jmSaveBtn');
+      await P.waitForFunction(() => !document.getElementById('journalModal').classList.contains('show'));
+      posts = callsTo(b, 'POST', /\/journals$/);
+      check('成功關掉表單後再開新的一張:換新單號', posts.length === 3 && !!posts[2].body.client_request_id && posts[2].body.client_request_id !== id1, posts.map((p) => p.body.client_request_id));
+      check('單號只在背後送,畫面上看不到欄位名', !/client_request_id|request_id/.test(await P.innerText('body')));
+      const ids = await P.evaluate(() => {
+        // 假的網址不是安全環境,瀏覽器本來就沒有 randomUUID(跟現場平板走 http 一樣):先量退回的樣子,再塞一個假的量 UUID 那條路
+        const fallback = CC.newRequestId();
+        Object.defineProperty(Crypto.prototype, 'randomUUID', { value: () => '11111111-2222-3333-4444-555555555555', configurable: true });
+        const uuid = CC.newRequestId();
+        return { uuid, fallback };
+      });
+      check('單號產生:沒有 randomUUID(平板走 http)退回「時間-亂數」≤ 64 字;有就用 UUID', /^\d{13}-0\.\d+$/.test(ids.fallback) && ids.fallback.length <= 64 && ids.uuid === '11111111-2222-3333-4444-555555555555', ids);
+      check('記一筆的防重複單號不影響別的功能:沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+    }
+    {
+      // 關帳:日期 ≤ 關帳日的列灰字 + 鎖頭,編輯 / 沖銷鈕灰掉並寫原因
+      const b = makeBackend({ closedThrough: '2026-10-10' });
+      const t = await openPage(browser, b, '/journals');
+      const P = t.page;
+      await P.waitForSelector('#rows tr[data-id="1"]');
+      const want = '2026-10-10 以前已關帳,不能再改';
+      const row1 = await P.$eval('#rows tr[data-id="1"]', (tr) => ({
+        cls: tr.className, first: tr.children[0].textContent.trim(),
+        eDis: tr.querySelector('[data-act=edit]').disabled, eTitle: tr.querySelector('[data-act=edit]').title,
+        rDis: tr.querySelector('[data-act=reverse]').disabled, rTitle: tr.querySelector('[data-act=reverse]').title,
+        color: getComputedStyle(tr.children[2]).color,
+      }));
+      check('關帳:已關帳的列有「closed-row」灰字樣式、日期前面有 🔒', /closed-row/.test(row1.cls) && /^🔒 2026-10-10$/.test(row1.first) && row1.color === 'rgb(153, 153, 153)', row1);
+      const wantRev = '這筆在已關帳期間,沖銷會記在今天,不會改到已關帳的月份';
+      check('關帳:✏️ disabled 且 title 寫「2026-10-10 以前已關帳,不能再改」;↺ 不 disabled、title 含「記在今天」', row1.eDis && row1.eTitle === want && !row1.rDis && row1.rTitle === wantRev && /記在今天/.test(row1.rTitle), row1);
+      const r4 = await P.$eval('#rows tr[data-id="4"] [data-act=reverse]', (e) => ({ d: e.disabled, t: e.title }));
+      check('關帳:複式單(10/06)的 ↺ 也不 disabled、title 含「記在今天」', !r4.d && r4.t === wantRev, r4);
+      await P.dispatchEvent('#rows tr[data-id="1"] [data-act=edit]', 'click');
+      await sleep(200);
+      check('關帳:硬點灰掉的 ✏️,不跳框、不去讀這筆', !(await P.$('.cc-dlg')) && callsTo(b, 'GET', /journals\/1$/).length === 0);
+      await P.click('#rows tr[data-id="1"] [data-act=reverse]');
+      await P.waitForSelector('.cc-dlg');
+      await P.fill('.cc-dlg textarea', '關帳後更正');
+      await P.click('.cc-dlg .cc-btn.danger');
+      await P.waitForSelector('#rows .cc-result');
+      check('關帳:已關帳的列 ↺ 照樣能按,走沖銷入口並帶原因', callsTo(b, 'POST', /journals\/1\/reverse$/).length === 1 && callsTo(b, 'POST', /journals\/1\/reverse$/)[0].body.reason === '關帳後更正');
+      await P.click('#rows tr[data-id="1"] td:nth-child(4)');
+      await P.waitForFunction(() => document.getElementById('detailModal').classList.contains('show'));
+      await P.waitForFunction(() => document.getElementById('dtBody').textContent.length > 0 && !/讀取中/.test(document.getElementById('dtBody').textContent));
+      const dd = await P.evaluate(() => ({ e: document.getElementById('dtEditBtn').disabled, et: document.getElementById('dtEditBtn').title, r: document.getElementById('dtReverseBtn').disabled, rt: document.getElementById('dtReverseBtn').title }));
+      check('關帳:詳情視窗的編輯鈕灰掉並寫原因;沖銷鈕可按、title 含「記在今天」', dd.e && dd.et === want && !dd.r && dd.rt === wantRev, dd);
+      check('關帳:明細頁沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+      // 關帳日 10/06:10/10 的列還能操作、複式單 10/06 算已關帳
+      const b2 = makeBackend({ closedThrough: '2026-10-06' });
+      const t2 = await openPage(browser, b2, '/journals');
+      await t2.page.waitForSelector('#rows tr[data-id="1"]');
+      const open1 = await t2.page.$eval('#rows tr[data-id="1"]', (tr) => ({ cls: tr.className, first: tr.children[0].textContent.trim(), eDis: tr.querySelector('[data-act=edit]').disabled, eTitle: tr.querySelector('[data-act=edit]').title }));
+      check('關帳日 10/06:10/10 的列沒鎖(沒灰字、沒鎖頭、✏️ 可按、title 還是「編輯」)', !/closed-row/.test(open1.cls) && open1.first === '2026-10-10' && !open1.eDis && open1.eTitle === '編輯', open1);
+      check('關帳日 10/06:複式單(10/06,邊界含當天)的列標為已關帳(🔒),↺ 可按且 title 含「記在今天」', /🔒/.test(await t2.page.textContent('#rows tr[data-id="4"] td:first-child')) && !(await t2.page.isDisabled('#rows tr[data-id="4"] [data-act=reverse]')) && /記在今天/.test(await t2.page.getAttribute('#rows tr[data-id="4"] [data-act=reverse]', 'title')));
+      check('關帳日 10/06:沒關帳的列 ↺ title 仍是「沖銷這筆」', (await t2.page.getAttribute('#rows tr[data-id="1"] [data-act=reverse]', 'title')) === '沖銷這筆');
+      await t2.context.close();
+    }
+    {
+      // 外網元件(Bootstrap / Sortable)沒載入:清單照出、記一筆視窗用備援開得起來、排序講白話
+      const b = makeBackend({ noBootstrap: true, noSortable: true });
+      const t = await openPage(browser, b, '/journals');
+      const P = t.page;
+      await P.waitForSelector('#rows tr[data-id="1"]');
+      check('Bootstrap 沒載入(明細頁):清單正常顯示、沒有 JS 錯誤', (await P.$$('#rows tr[data-id]')).length === 4 && t.errors.length === 0, t.errors);
+      await P.click('#newBtn');
+      check('Bootstrap 沒載入:「記一筆」視窗用備援開得起來(看得到金額欄)', await P.isVisible('#jmAmount') && await P.isVisible('#jmSaveBtn'));
+      await P.click('.reorder-btn >> nth=0');
+      check('Bootstrap 沒載入:按排序鈕(同時 Sortable 也沒載入)講白話,不整頁壞掉', /排序功能暫時用不了/.test(await P.textContent('#jmError')) && !/not defined|Sortable/.test(await P.textContent('#jmError')) && t.errors.length === 0, [await P.textContent('#jmError'), t.errors]);
+      await P.click('#journalModal button:has-text("取消")');
+      check('Bootstrap 沒載入:按「取消」可關掉視窗', !(await P.isVisible('#jmAmount')));
+      await t.context.close();
+    }
+
     // ============ 8. 報表頁 ============
     section('8. reports.html');
     {
@@ -798,6 +993,47 @@ async function main() {
       await t.context.close();
     }
 
+    {
+      // 月報 / 年報上方的待審提示、已關帳標示、圖表載不出來
+      for (const [label, opt, expectFn] of [
+        ['3 筆 $12,820', { pending: { count: 3, total: 12820 } }, (tx) => /還有 3 筆、合計 \$12,820 在待審,沒有算進下面的數字/.test(tx) && /去待審/.test(tx)],
+        ['0 筆', { pending: { count: 0, total: 0 } }, (tx) => tx === ''],
+        ['查不到(null)', { pending: null }, (tx) => /待審筆數暫時查不到/.test(tx)],
+        ['後端舊版沒這個欄位', {}, (tx) => tx === ''],
+      ]) {
+        const bp = makeBackend(opt);
+        const tp = await openPage(browser, bp, '/reports');
+        await tp.page.waitForSelector('#mContent:not(.d-none)');
+        const mt = (await tp.page.textContent('#mPending')).trim();
+        await tp.page.click('.report-tab[data-pane=yearly]');
+        await tp.page.waitForSelector('#yContent:not(.d-none)');
+        const yt = (await tp.page.textContent('#yPending')).trim();
+        check('月報 / 年報待審提示 · ' + label, expectFn(mt) && expectFn(yt) && tp.errors.length === 0, [mt, yt, tp.errors]);
+        if (label.startsWith('3 筆')) check('月報待審提示:連到 /pending', (await tp.page.getAttribute('#mPending a', 'href')) === '/pending');
+        await tp.context.close();
+      }
+      const bc = makeBackend({ monthClosed: true });
+      const tc = await openPage(browser, bc, '/reports');
+      await tc.page.waitForSelector('#mContent:not(.d-none)');
+      check('月份已關帳:標題旁標「已關帳」', await tc.page.isVisible('#mClosedTag') && /已關帳/.test(await tc.page.textContent('#mClosedTag')) && /2026-10/.test(await tc.page.textContent('#mContent .section-title')));
+      await tc.context.close();
+      for (const mc of [false, undefined]) {
+        const bo = makeBackend({ monthClosed: mc });
+        const to = await openPage(browser, bo, '/reports');
+        await to.page.waitForSelector('#mContent:not(.d-none)');
+        check('月份沒關帳(' + (mc === undefined ? '後端舊版沒這個欄位' : 'closed=false') + '):不標「已關帳」', !(await to.page.isVisible('#mClosedTag')));
+        await to.context.close();
+      }
+      const bn = makeBackend({ noChart: true });
+      const tn = await openPage(browser, bn, '/reports');
+      await tn.page.waitForSelector('#mContent:not(.d-none)');
+      await tn.page.click('.report-tab[data-pane=yearly]');
+      await tn.page.waitForSelector('#yContent:not(.d-none)');
+      const bodyN = await tn.page.innerText('body');
+      check('圖表載不出來(年報):KPI 有值、寫「圖表載不出來(店內連不上外網)…」、不出現「載入失敗」、圖例照列', (await tn.page.textContent('#yKpiIncome')) === '$1' && /圖表載不出來\(店內連不上外網\),上面的數字不受影響/.test(await tn.page.textContent('#yChartMsg')) && await tn.page.isVisible('#yChartMsg') && !/載入失敗/.test(bodyN) && /菜色/.test(await tn.page.textContent('#yIncomeLegend')) && tn.errors.length === 0, [bodyN.slice(0, 200), tn.errors]);
+      await tn.context.close();
+    }
+
     // ============ 9. 設定頁 ============
     section('9. settings.html');
     {
@@ -830,6 +1066,40 @@ async function main() {
       await t2.page.waitForSelector('#content:not(.d-none)');
       check('唯讀角色:顯示橫幅(中文角色名)、儲存鈕灰掉', await t2.page.isVisible('#readOnlyBanner') && /唯讀/.test(await t2.page.textContent('#myRoleName')) && await t2.page.isDisabled('#saveBookBtn'));
       await t2.context.close();
+    }
+    {
+      // 關帳:只有擁有者看得到日期欄和儲存鈕,其他人只看文字
+      const b = makeBackend({ role: 'owner', closedThrough: '2026-09-30' });
+      const t = await openPage(browser, b, '/settings');
+      const P = t.page;
+      await P.waitForSelector('#content:not(.d-none)');
+      check('關帳(擁有者):看得到「關帳到」日期欄和儲存鈕,預填目前關帳日 2026-09-30', await P.isVisible('#fClosed') && await P.isVisible('#saveCloseBtn') && (await P.inputValue('#fClosed')) === '2026-09-30' && !(await P.isVisible('#closeText')));
+      const closeTxt = await P.textContent('#closeCard');
+      check('關帳說明用白話(「關帳日以前的帳不能再改;要改先把日期往前調」),不出現欄位名', /關帳日以前的帳不能再改;要改先把日期往前調/.test(closeTxt) && !/closed_through|PATCH|409/.test(closeTxt), closeTxt);
+      await P.fill('#fClosed', '2026-10-15');
+      await P.click('#saveCloseBtn');
+      await P.waitForSelector('#closeCard .cc-result.ok');
+      const pc = callsTo(b, 'PATCH', /^\/B\/NEST0001$/);
+      check('關帳:儲存只送 closed_through = 2026-10-15,結果留在關帳卡片裡', pc.length === 1 && JSON.stringify(pc[0].body) === '{"closed_through":"2026-10-15"}' && /已關帳到 2026-10-15/.test(await P.textContent('#closeCard .cc-result')), pc);
+      await P.fill('#fClosed', '');
+      await P.click('#saveCloseBtn');
+      await P.waitForFunction(() => { const r = document.querySelector('#closeCard .cc-result'); return !!r && /已取消關帳/.test(r.textContent); });
+      const pc2 = callsTo(b, 'PATCH', /^\/B\/NEST0001$/);
+      check('取消關帳:日期清空再儲存 → 送 closed_through = null', pc2.length === 2 && pc2[1].body.closed_through === null, pc2.map((c) => c.body));
+      check('關帳頁沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+      for (const role of ['editor', 'admin', 'viewer']) {
+        const b2 = makeBackend({ role, closedThrough: '2026-09-30' });
+        const t2 = await openPage(browser, b2, '/settings');
+        await t2.page.waitForSelector('#content:not(.d-none)');
+        check('關帳(' + role + '):看不到日期欄和儲存鈕,只看到文字「目前關帳到 2026-09-30」', !(await t2.page.isVisible('#fClosed')) && !(await t2.page.isVisible('#saveCloseBtn')) && await t2.page.isVisible('#closeText') && /目前關帳到 2026-09-30/.test(await t2.page.textContent('#closeText')), await t2.page.textContent('#closeText'));
+        await t2.context.close();
+      }
+      const b3 = makeBackend({ role: 'editor' });
+      const t3 = await openPage(browser, b3, '/settings');
+      await t3.page.waitForSelector('#content:not(.d-none)');
+      check('關帳(沒設過,記帳員):文字顯示「尚未關帳」', /尚未關帳/.test(await t3.page.textContent('#closeText')) && !(await t3.page.isVisible('#fClosed')));
+      await t3.context.close();
     }
 
     // ============ 10. 主檔頁 ============
@@ -885,6 +1155,51 @@ async function main() {
       const pc = callsTo(b, 'PATCH', /counterparties\/13$/);
       check('升級對象:送出 is_temporary=false,結果接在該列旁邊', pc.length === 1 && pc[0].body.is_temporary === false && /已升級為正式對象/.test(await P.textContent('#cpRows .cc-result')), pc);
       check('主檔頁沒有 JS 錯誤、全程沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+    }
+    {
+      // 考勤包 5 的三個薪資負債科目:改名要二次確認(409);名字要與主 repo 一字不差(第三個是全形破折號 U+2014)
+      const NAMES = [[7, '應付代扣稅款'], [8, '應付勞退自提'], [9, '其他應付款—員工']];
+      const b = makeBackend({ guardByName: true, extraAccounts: true });
+      const t = await openPage(browser, b, '/setup');
+      const P = t.page;
+      await P.waitForSelector('#acctRows tr[data-id="5"]', { state: 'attached' });
+      await P.click('.master-tab[data-pane=accounts]');
+      const shown = [];
+      for (const [id, nm] of NAMES) shown.push((await P.textContent(`#acctRows tr[data-id="${id}"]`)).indexOf(nm) >= 0);
+      check('三個新負債科目名稱照樣顯示(第三個的破折號是全形 U+2014,與主 repo 一字不差)', shown.every(Boolean) && NAMES[2][1] === '其他應付款—員工' && NAMES[2][1].charCodeAt(5) === 0x2014, shown);
+      for (const [id, nm] of NAMES) {
+        await P.click(`#acctRows tr[data-id="${id}"] [data-act=edit-acct]`);
+        await P.fill('#amName', nm + '(改)');
+        await P.click('#amSaveBtn');
+        await P.waitForSelector('.cc-dlg');
+        const dtxt = await P.textContent('.cc-dlg');
+        const before = callsTo(b, 'PATCH', new RegExp('accounts/' + id + '$'));
+        check('改名「' + nm + '」→ 409 要二次確認:跳自畫框、文案是後端白話、第一次請求沒帶 confirm', /128 筆記錄在用/.test(dtxt) && t.dialogs.length === 0 && before.length === 1 && !('confirm' in before[0].body), [dtxt, before]);
+        await P.click('.cc-dlg .cc-btn:not(.danger)');   // 取消
+        await sleep(150);
+        await P.evaluate(() => document.getElementById('accountModal').classList.remove('show'));
+      }
+      // 對照組:不在守衛名單裡的帳戶(id 6)改名,不該被要求二次確認
+      await P.click('#acctRows tr[data-id="6"] [data-act=edit-acct]');
+      await P.fill('#amName', '應付帳款-乙');
+      await P.click('#amSaveBtn');
+      await P.waitForFunction(() => !document.getElementById('accountModal').classList.contains('show'));
+      check('對照組:不在守衛名單的帳戶改名直接存成功,沒有跳確認框', !(await P.$('.cc-dlg')) && callsTo(b, 'PATCH', /accounts\/6$/).length === 1);
+      check('三個科目改名測試沒有 JS 錯誤', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
+      await t.context.close();
+    }
+    {
+      // Bootstrap 沒載入(店內連不上外網):頁面不死,視窗用備援
+      const b = makeBackend({ noBootstrap: true });
+      const t = await openPage(browser, b, '/setup');
+      const P = t.page;
+      await P.waitForSelector('#acctRows tr[data-id="5"]', { state: 'attached' });
+      await P.click('.master-tab[data-pane=accounts]');
+      await P.click('#acctRows tr[data-id="5"] [data-act=edit-acct]');
+      check('Bootstrap 沒載入(主檔頁):清單照樣出來、編輯視窗用備援開得起來、沒有 JS 錯誤', await P.isVisible('#accountModal') && (await P.inputValue('#amName')) === '現金袋' && t.errors.length === 0, t.errors);
+      await P.click('#accountModal button:has-text("取消")');
+      check('Bootstrap 沒載入(主檔頁):按「取消」可關掉視窗', !(await P.isVisible('#accountModal')));
       await t.context.close();
     }
 
