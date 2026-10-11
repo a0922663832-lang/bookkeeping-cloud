@@ -34,21 +34,17 @@ curl http://localhost:3001/health
 帳本角色由 HR `/attendance` 的「記帳雲權限」決定(每次檢查都會跟 HR 名單同步,降級立即生效)。
 HR 連不上時沿用最後一份名單 10 分鐘,超過就擋。
 
-## 預設帳號（首次啟動自動建立,僅 LEGACY_EMAIL_LOGIN 緊急用）
+## 帳號
 
-- Email: `a0922663832@gmail.com`
-- 密碼: `.env` 內 `INITIAL_ADMIN_PASSWORD`（預設 `changeme`，請登入後立刻用 `/auth/change-password` 改掉）
-- 帳本: 花現鳥巢 / Nest Restaurant（code = `NEST0001`）
+- **登入只走 HR 員工名單**(上面的 HR SSO):沒有獨立的 email / 密碼帳號,改 PIN 回 HR `/attendance`。
+- 緊急後門(bcrypt email + 密碼)預設**關閉**,線上也是關的;開法見 `src/routes/auth.js:8`(`LEGACY_EMAIL_LOGIN=true`)。`/auth/register`、`/auth/change-password` 兩個端點已回 410。
+- 帳本: 花現鳥巢 / Nest Restaurant(code = `NEST0001`);測試用 staging 帳本 `NEST0099`(所有自動化測試只准打這本)。
 
 ## 試 API
 
 ### 1. 登入拿 token
 
-```powershell
-curl -X POST http://localhost:3001/auth/login `
-  -H "Content-Type: application/json" `
-  -d '{\"email\":\"a0922663832@gmail.com\",\"password\":\"changeme\"}'
-```
+最簡單是開瀏覽器到登入頁(下拉選員工 + PIN)。要用 curl 就照登入頁送的格式 POST `/auth/login`(欄位看 `src/routes/auth.js` 的 login handler,用自己的員工編號與 PIN,**不要把 PIN 寫進任何檔案或對話**)。
 
 回應會給 `token`，記下來，下面 API 都要在 header 帶 `Authorization: Bearer <token>`。
 
@@ -64,14 +60,9 @@ curl http://localhost:3001/auth/me -H "Authorization: Bearer <token>"
 curl http://localhost:3001/books -H "Authorization: Bearer <token>"
 ```
 
-### 4. 改預設密碼（強烈建議）
+### 4. 改 PIN
 
-```powershell
-curl -X POST http://localhost:3001/auth/change-password `
-  -H "Authorization: Bearer <token>" `
-  -H "Content-Type: application/json" `
-  -d '{\"current_password\":\"changeme\",\"new_password\":\"你的新密碼\"}'
-```
+雲端沒有改密碼的端點(`/auth/change-password` 回 410)。PIN 在 HR 系統 `/attendance` 改,改完記帳雲下次檢查名單時自動生效(登入會被要求重登)。
 
 ### 5. 建新帳本
 
@@ -147,11 +138,11 @@ migration 在 app 啟動時自動跑(`src/migrate.js`),失敗 = app 起不來。
 
 ### 改 JWT_SECRET 為亂數
 
-第一次部署用 `.env` 內 default 即可，但要正式販售前把 JWT_SECRET 改亂數：
+第一次部署用 `.env` 內 default 即可，但要正式販售前把 JWT_SECRET 改亂數(下面的 `<...>` 全部換成自己的值,**不要照抄範例、不要貼進對話或 commit**)：
 
 ```powershell
 $jwt = -join ((1..64) | ForEach-Object { "0123456789abcdef"[(Get-Random -Maximum 16)] })
-$envContent = "POSTGRES_PASSWORD=nestpass`nJWT_SECRET=$jwt`nINITIAL_ADMIN_PASSWORD=changeme`nNODE_ENV=development"
+$envContent = "POSTGRES_PASSWORD=<自己的值>`nJWT_SECRET=$jwt`nNODE_ENV=development"
 $envContent | Out-File -FilePath "$env:TEMP\bk-env" -Encoding ASCII -NoNewline
 scp "$env:TEMP\bk-env" "nester@10.0.1.168:/root/bookkeeping-cloud/.env"
 ssh nester@10.0.1.168 "cd /root/bookkeeping-cloud && docker compose up -d app"
@@ -161,7 +152,7 @@ Remove-Item "$env:TEMP\bk-env"
 注意：改 JWT_SECRET 會讓所有既有 login token 失效，要重新登入。
 ⚠ 上面是示意;**簽章密鑰(WEBHOOK_HMAC_SECRET)輪替請用主 repo `scripts/rotate_bookkeeping_hmac.ps1`**,機密不要貼進對話或 commit。
 
-POSTGRES_PASSWORD 改較複雜（要同步改 PG 內的 user password），內網自家用先保留 nestpass，販售前再嚴密化。
+POSTGRES_PASSWORD 改較複雜（要同步改 PG 內的 user password），內網自家用 LEO 2026-10-11 拍板「先不動」，販售前再嚴密化。
 
 ### HTTPS 設定（販售前再做）
 

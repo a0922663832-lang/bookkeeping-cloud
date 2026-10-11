@@ -33,7 +33,7 @@ const { seedDefaultsForBook } = require('./seedDefaults');
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const VERSION = '0.15.0';
+const VERSION = '0.16.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // ── Redis ──────────────────────────────────────────────────────────
