@@ -552,7 +552,7 @@ async function insertCompositeReverseHeader(client, bookId, o, subjectId, opts) 
  *   原單有效日期沒關帳 → { date: 指定日期 || 今天, originalDate: null(= 原單日期), closedOriginal: false }
  *   原單有效日期已關帳 → { date: 指定日期 || 今天, originalDate: 同 date, closedOriginal: true,
  *                         summaryPrefix: '[沖銷 YYYY-MM-DD 的單]' }
- *   沖銷單自己落進關帳期間(指定日期太早,或關帳日設得比今天晚)→ 丟錯(畫面 409 / 推送 422)。
+ *   沖銷單自己的日期(預設或指定)落進關帳期間 → 一律丟錯(畫面 409 / 推送 422),不管原單有沒有關帳。
  * keepOriginalDay:supersede 以前把沖銷單 date 寫成原單日期(沒關帳時照舊)。
  */
 function reverseDatesFor(o, closedThrough, opts) {
@@ -561,7 +561,8 @@ function reverseDatesFor(o, closedThrough, opts) {
   const closedOriginal = isDateClosed(origEff, closedThrough);
   if (!closedOriginal) {
     const date = x.dateOverride || (x.keepOriginalDay ? o.date : taipeiToday());
-    if (x.dateOverride && isDateClosed(toYmd(x.dateOverride), closedThrough)) {
+    // 沖銷單自己的日期一律檢查(不論預設今天還是自選):例 關帳日 = 今天、原單在未來 → 預設今天也會落進關帳期
+    if (isDateClosed(toYmd(date), closedThrough)) {
       throw httpError(x.mode === 'push' ? 422 : 409, closedMessage(closedThrough, x.mode), { errCode: 'book_closed' });
     }
     return { date, originalDate: null, closedOriginal: false, summaryPrefix: '' };
@@ -678,24 +679,47 @@ async function reverseJournalRow(client, bookId, o, opts) {
 }
 
 // ── D25: invoices writer ────────────────────────────────────────────
+// 第二輪 verifier 補洞:發票欄位超長(invoice_period CHAR(6)、customer_tax_id VARCHAR(10))以前會讓
+// 核准 / auto 入帳整筆 500 卡死。現在防禦式寫:字串欄位 trim + 依欄寬截斷(期別不是 6 位數字就留空),
+// 單一張寫入失敗只 console.warn 跳過那張(用 SAVEPOINT,不弄壞呼叫端的 transaction),分錄照樣入帳。
+// 欄寬照 migrations/012_invoices.sql;TEXT 欄位沒有上限,這裡只防垃圾值截到 200 字。
+const INVOICE_TEXT_MAX = 200;
+function invStr(v, max) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s ? s.slice(0, max) : null;
+}
+
 async function writeInvoices(client, bookId, journalLogId, invoices) {
   if (!Array.isArray(invoices) || invoices.length === 0) return;
-  for (const inv of invoices) {
-    await client.query(
-      `INSERT INTO invoices (book_id, journal_log_id, external_order_id, external_source,
-                              invoice_number, invoice_period, amount, customer_tax_id, is_void)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        bookId, journalLogId,
-        inv.external_order_id ? String(inv.external_order_id) : null,
-        inv.external_source || 'leo_pos',
-        inv.invoice_number || null,
-        inv.invoice_period || null,
-        Number(inv.amount) || 0,
-        inv.customer_tax_id || null,
-        !!inv.is_void,
-      ]
-    );
+  for (let i = 0; i < invoices.length; i++) {
+    const inv = invoices[i] && typeof invoices[i] === 'object' ? invoices[i] : {};
+    const period = invStr(inv.invoice_period, 6);
+    const amt = Number(inv.amount);
+    const row = [
+      bookId, journalLogId,
+      invStr(inv.external_order_id, INVOICE_TEXT_MAX),
+      invStr(inv.external_source, INVOICE_TEXT_MAX) || 'leo_pos',
+      invStr(inv.invoice_number, INVOICE_TEXT_MAX),
+      period && /^\d{6}$/.test(period) ? period : null,
+      Number.isFinite(amt) ? amt : 0,
+      invStr(inv.customer_tax_id, 10),
+      !!inv.is_void,
+    ];
+    await client.query('SAVEPOINT write_invoice');
+    try {
+      await client.query(
+        `INSERT INTO invoices (book_id, journal_log_id, external_order_id, external_source,
+                                invoice_number, invoice_period, amount, customer_tax_id, is_void)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        row
+      );
+      await client.query('RELEASE SAVEPOINT write_invoice');
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT write_invoice');
+      await client.query('RELEASE SAVEPOINT write_invoice');
+      console.warn(`[posting] 分錄 ${journalLogId} 第 ${i + 1} 張發票寫不進去,跳過:${e.message}`);
+    }
   }
 }
 

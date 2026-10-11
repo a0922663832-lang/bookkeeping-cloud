@@ -265,9 +265,11 @@ async function getRangeTotal(bookId, fromDate, toDate, externalSource, subjectCo
 //   count = 張數;total = 每張 |Σ科目腳|(複式)或 amount(單式),整數元。
 // 在 JS 裡算(不在 SQL 裡轉型):哪張待審單的日期 / 金額格式怪,只略過那張,不會讓整張報表壞掉。
 // 整段出錯 → 回 null + console.warn,報表照常回 200。
+// 最多掃最新的 5000 張待審(線上平常個位數;防萬一有人灌爆,報表不會因為這段變慢)
 const PENDING_SCAN_MAX = 5000;
 
-function pendingAmountCents(p) {
+// 一張待審單的金額(元):複式 = |Σ科目腳|,單式 = |amount|(舊進貨單可能有小數,先照原值留著)
+function pendingAmount(p) {
   if (!p || typeof p !== 'object') return 0;
   if (p.type === 'composite') {
     if (!Array.isArray(p.legs)) return 0;
@@ -275,26 +277,27 @@ function pendingAmountCents(p) {
     for (const l of p.legs) {
       if (!l || l.kind !== 'subject') continue;
       const a = Number(l.amount);
-      if (Number.isFinite(a)) s += Math.round(a * 100);
+      if (Number.isFinite(a)) s += a;
     }
     return Math.abs(s);
   }
   const a = Number(p.amount);
-  return Number.isFinite(a) ? Math.abs(Math.round(a * 100)) : 0;
+  return Number.isFinite(a) ? Math.abs(a) : 0;
 }
 
-/** 純函式:rows = [{ proposed_journal }] → { count, total }(total 整數元;單式舊進貨單可能有小數,加總後四捨五入) */
+/** 純函式:rows = [{ proposed_journal }] → { count, total }(total 整數元) */
 function summarizePending(rows, fromDate, toDate) {
   let count = 0;
-  let cents = 0;
+  let sum = 0;
   for (const r of rows) {
     const p = r && r.proposed_journal;
     const d = p && typeof p.date === 'string' ? p.date.slice(0, 10) : '';
     if (!isRealDate(d) || d < fromDate || d > toDate) continue;
     count++;
-    cents += pendingAmountCents(p);
+    sum += pendingAmount(p);
   }
-  return { count, total: Math.round(cents / 100) };
+  // 元加總後四捨五入,不是單位換算(只給「還有多少在待審」的提示用,不進任何帳)
+  return { count, total: Math.round(sum) };
 }
 
 async function getPendingSummary(bookId, fromDate, toDate) {
@@ -695,4 +698,4 @@ router.use((err, req, res, next) => {
 
 module.exports = router;
 // 純函式(scratchpad 小測試用)
-module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate, summarizePending, pendingAmountCents };
+module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate, summarizePending, pendingAmount };

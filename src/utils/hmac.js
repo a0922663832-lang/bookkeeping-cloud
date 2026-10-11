@@ -127,7 +127,6 @@ function verifyRequest(headers, rawBody, method, reqPath) {
     }
     expected = computeSignatureV2(ts, method, reqPath, rawBody || '');
   } else {
-    console.warn('[hmac] 收到 v1 簽章', reqPath);
     expected = computeSignature(ts, rawBody || '');
   }
   const provided = sig.replace(/^sha256=/, '');
@@ -139,6 +138,8 @@ function verifyRequest(headers, rawBody, method, reqPath) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return { valid: false, reason: 'signature mismatch', configured: true, version };
   }
+  // 驗過才記(垃圾請求不灌 log);部署後用這行確認主 repo 是否全部換成 v2
+  if (version === 1) console.warn('[hmac] 收到 v1 簽章', reqPath);
   return { valid: true, configured: true, version };
 }
 

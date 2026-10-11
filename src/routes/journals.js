@@ -7,6 +7,7 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 const { query, withTransaction } = require('../db');
 const { requireAuth } = require('../auth');
@@ -270,7 +271,8 @@ async function applyBalanceDelta(client, bookId, type, outAcc, inAcc, amount, di
 // ── 手動記帳冪等(第二輪 §4.7 / Y54)──────────────────────────────────
 // 平板網路閃一下、回應沒收到 → 使用者重按「記一筆」就多一筆。前端每張表單帶一個 client_request_id,
 // 同一張表單重送用同一個。後端記憶體 Map(單一 app container,不用 Redis):
-//   key = bookId:userId:client_request_id → { at, journalId | promise }
+//   key = bookId:userId:client_request_id → { at, journalId | promise, hash(內容指紋) }
+//   同鍵同內容 → 回同一筆;同鍵但內容不同 → 409 白話(不回舊單假裝成功)
 //   10 分鐘過期、最多 1000 筆(滿了丟最舊的)。沒帶 client_request_id 照舊(不強制)。
 // 競態:第一次還在寫、第二次就進來 → 第一次在開始寫入前就先「佔位」(存一個還沒完成的 promise),
 //   第二次看到佔位就等它:成功 → 回同一筆(200 + idempotent:true);失敗 → 佔位已拿掉,第二次自己重做一次。
@@ -303,27 +305,51 @@ async function loadJournalForResponse(bookId, id) {
   return j;
 }
 
+// 同一個識別碼、內容卻不一樣(第一次其實成功但回應遺失,使用者改了金額再按)→ 不能回舊單假裝成功
+const IDEM_MISMATCH_MSG = '這張單剛才已經送出成功了,內容跟現在填的不一樣;請到明細找到那筆再修改,不要重送';
+
+// body 內容指紋:排除 client_request_id 本身,物件鍵排序後 sha256(同內容不同鍵順序算同一張)
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(',')}}`;
+}
+function idemBodyHash(b) {
+  const rest = { ...(b && typeof b === 'object' ? b : {}) };
+  delete rest.client_request_id;
+  return crypto.createHash('sha256').update(stableStringify(rest)).digest('hex');
+}
+
 /**
  * 用冪等鍵跑 work()(work 回傳新建的 journal 整列)。
+ * bodyHash:這次送來內容的指紋;同鍵但指紋不同 → 409(IDEM_MISMATCH_MSG)。
  * 回 { journal, idempotent }。work 丟錯 → 拿掉佔位、照樣丟出去。
  */
-async function runIdempotent(key, bookId, work) {
+async function runIdempotent(key, bookId, work, bodyHash) {
   if (!key) return { journal: await work(), idempotent: false };
+  const sameBody = (entry) => !bodyHash || !entry.hash || entry.hash === bodyHash;
   for (let round = 0; round < 3; round++) {
     const now = Date.now();
     idemPurge(now);
     const hit = idemMap.get(key);
     if (hit && now - hit.at <= IDEM_TTL_MS) {
       if (hit.journalId) {
+        if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG);
         const j = await loadJournalForResponse(bookId, hit.journalId);
         if (j) return { journal: j, idempotent: true };
         idemMap.delete(key);   // 那筆不見了(不該發生)→ 當沒做過
       } else if (hit.promise) {
+        let jid = null;
         try {
-          const jid = await hit.promise;
+          jid = await hit.promise;
+        } catch (_) { /* 第一次失敗 → 佔位已拿掉,下一輪自己做 */ }
+        if (jid) {
+          // 第一次成功了:內容不同 → 409;相同 → 回同一筆
+          if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG);
           const j = await loadJournalForResponse(bookId, jid);
           if (j) return { journal: j, idempotent: true };
-        } catch (_) { /* 第一次失敗 → 佔位已拿掉,下一輪自己做 */ }
+        }
         continue;
       }
     }
@@ -331,7 +357,7 @@ async function runIdempotent(key, bookId, work) {
     let resolveFn, rejectFn;
     const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
     promise.catch(() => {});   // 沒人在等時不要變成未處理的 rejection
-    const entry = { at: now, promise, journalId: null };
+    const entry = { at: now, promise, journalId: null, hash: bodyHash || null };
     idemMap.delete(key);       // 先刪再放:保持 Map 依時間排序(過期清理靠這個)
     idemMap.set(key, entry);
     while (idemMap.size > IDEM_MAX) idemMap.delete(idemMap.keys().next().value);
@@ -474,7 +500,7 @@ router.post(
 
       journal.targets = await fetchTargetsForJournal(client, journal.id);
       return journal;
-    }));
+    }), idemKey ? idemBodyHash(b) : null);
 
     if (ran.idempotent) return res.status(200).json({ journal: ran.journal, idempotent: true });
     res.status(201).json({ journal: ran.journal });
@@ -1021,7 +1047,7 @@ router.get('/B/:bookCode/journals/:id/history', loadBook, asyncHandler(async (re
 
 module.exports = router;
 // 小測試用(冪等佔位 / 競態)
-module.exports._internals = { runIdempotent, idemReadId, idemMap, IDEM_MAX, IDEM_TTL_MS };
+module.exports._internals = { runIdempotent, idemReadId, idemBodyHash, idemMap, IDEM_MAX, IDEM_TTL_MS };
 
 // 統一錯誤導向 (status 從 error.status 拿)
 router.use((err, req, res, next) => {

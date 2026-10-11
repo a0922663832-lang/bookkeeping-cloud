@@ -386,6 +386,8 @@ async function round2() {
       if (I1) cleanup.push(I1);
       check(i1.status === 201 && I1 && !i1.data.idempotent, 'I1 第一次送出 → 201', i1);
       check(i2.status === 200 && i2.data.idempotent === true && i2.data.journal && i2.data.journal.id === I1, 'I2 同一張表單重送 → 200、同一筆、idempotent', i2);
+      const i2b = await postJ({ ...ib, amount: 38 });
+      check(i2b.status === 409 && /已經送出成功/.test(i2b.data.error || '') && !i2b.data.journal, 'I2b 同一個識別碼但金額改了 → 409 白話(不回舊單)', i2b);
       const il = await call('GET', `${B}/journals?from=2026-09-22&to=2026-09-22&limit=500`);
       check(il.status === 200 && (il.data.journals || []).filter((j) => j.summary === tag).length === 1, 'I3 帳上只多 1 筆', { count: (il.data.journals || []).filter((j) => j.summary === tag).length });
       const i4 = await postJ({ ...ib, client_request_id: `${crid}-2` });
@@ -497,6 +499,7 @@ async function round2() {
     } else {
       const kj = await postJ({ date: '2026-09-10', type: 'expense', amount: 70, subject_id: S6901, transfer_out_account_id: CASH, summary: `smoke K ${TS}` });
       const KJ = kj.data.journal && kj.data.journal.id;
+      if (KJ) cleanup.push(KJ);   // K14 正常會沖掉它(selfClean 遇 409 略過);中途出錯沒沖到時由 selfClean 沖
       check(kj.status === 201 && KJ, 'K1 關帳前先記一張 9/10 的單', kj);
       const kp = await pushPosting(expensePush(`smoke:KP:${TS}`, '2026-09-20', 15));
       check(kp.status === 202, 'K2 關帳前先推一張 9/20 的待審', kp);
