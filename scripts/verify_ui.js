@@ -56,7 +56,7 @@ function commonSource() {
 function makeBackend(opts) {
   const sc = Object.assign({
     role: 'owner', pendingTotal: null, pendingBig: false, noChart: false, noBootstrap: false,
-    noSortable: false, closedThrough: null, monthClosed: undefined, postAbortFirst: 0, guardByName: false, extraAccounts: false,
+    noSortable: false, noCss: false, postConflict409: false, closedThrough: null, monthClosed: undefined, postAbortFirst: 0, guardByName: false, extraAccounts: false,
     rosterFail: 0, loginMode: 'ok', cpFail: false, reconFail: false, reconRan: true,
     accountPatchNeedsConfirm: true, delayCp: 0, unauthorizedOn: null,
   }, opts || {});
@@ -263,6 +263,8 @@ function makeBackend(opts) {
     if (p === B + '/journals' && method === 'POST') {
       // 模擬平板網路閃一下:前幾次直接斷線(請求已記在 calls 裡,後端其實沒收到)
       if (sc.postAbortFirst > 0) { sc.postAbortFirst--; return route.abort('failed'); }
+      // 上一次其實已經記進去了,這次重送被後端認出來
+      if (sc.postConflict409) return json(409, { error: '這張單剛才已經送出成功了,請到明細查看,不會重複記帳。' });
       return json(200, { journal: { id: 99 } });
     }
     m = p.match(/^\/B\/NEST0001\/journals\/(\d+)\/legs$/);
@@ -324,6 +326,7 @@ async function openPage(browser, backend, pagePath, o) {
   await context.route('http://cloud.test/**', backend.handler);
   await context.route('https://cdn.jsdelivr.net/**', (route) => {
     const u = route.request().url();
+    if (u.endsWith('.css') && backend.sc.noCss) return route.fulfill({ status: 404, body: '' });
     if (u.endsWith('.css')) return route.fulfill({ status: 200, contentType: 'text/css', body: '.d-none{display:none!important}.modal{display:none}.modal.show{display:block}' });
     if (/bootstrap/.test(u)) {
       if (backend.sc.noBootstrap) return route.fulfill({ status: 200, contentType: 'application/javascript', body: '/* bootstrap blocked */' });
@@ -949,6 +952,61 @@ async function main() {
       await t.context.close();
     }
 
+    {
+      // 後端回 409「這張單剛才已經送出成功了」(回應遺失、其實已經記進去):關表單、重載明細、換新單號
+      const b = makeBackend({ postConflict409: true });
+      const t = await openPage(browser, b, '/journals');
+      const P = t.page;
+      await P.waitForSelector('#rows tr[data-id="1"]');
+      const fillAndSave = async () => {
+        await P.click('#newBtn');
+        await P.selectOption('#jmSubject', '2');
+        await P.selectOption('#jmOut', '5');
+        await P.fill('#jmAmount', '100');
+        await P.click('#jmSaveBtn');
+      };
+      const lists = () => callsTo(b, 'GET', /\/journals$/).length;
+      const before = lists();
+      await fillAndSave();
+      await P.waitForFunction(() => !document.getElementById('journalModal').classList.contains('show'));
+      for (let i = 0; i < 40 && lists() === before; i++) await sleep(50);
+      check('409「剛才已經送出成功了」:表單關掉、明細列表重新抓一次、紅字沒有跳出來', lists() === before + 1 && !(await P.isVisible('#jmError')), [before, lists()]);
+      check('409 之後頁面上留一句白話(含後端那句話),沒有狀態碼', /剛才已經送出成功了/.test(await P.textContent('#opMsg')) && !/409/.test(await P.textContent('#opMsg')), await P.textContent('#opMsg'));
+      await fillAndSave();
+      await P.waitForFunction(() => !document.getElementById('journalModal').classList.contains('show'));
+      const ps = callsTo(b, 'POST', /\/journals$/);
+      check('409 之後再記一筆:換新的防重複單號', ps.length === 2 && !!ps[0].body.client_request_id && ps[0].body.client_request_id !== ps[1].body.client_request_id, ps.map((p) => p.body.client_request_id));
+      await t.context.close();
+    }
+    {
+      // 連 Bootstrap 樣式表也載不到:沒有備援樣式的話 d-none 不生效,「載入中」收不掉、表單全攤開
+      const b = makeBackend({ noCss: true });
+      const t = await openPage(browser, b, '/dashboard');
+      await t.page.waitForSelector('#content:not(.d-none)');
+      check('樣式表 404(儀表板):「載入中」收掉了、頁首出現「頁面樣式載不出來(店內連不上外網),功能照常」', !(await t.page.isVisible('#loading')) && await t.page.isVisible('#cc-style-warn') && /頁面樣式載不出來\(店內連不上外網\),功能照常/.test(await t.page.textContent('#cc-style-warn')) && t.errors.length === 0, t.errors);
+      await t.context.close();
+      const tj = await openPage(browser, makeBackend({ noCss: true }), '/journals');
+      const P = tj.page;
+      await P.waitForSelector('#rows tr[data-id="1"]');
+      const vis = () => P.evaluate(() => ({
+        modals: [...document.querySelectorAll('.modal')].filter((e) => getComputedStyle(e).display !== 'none').map((e) => e.id),
+        emptyAlerts: [...document.querySelectorAll('.alert')].filter((e) => getComputedStyle(e).display !== 'none' && !e.textContent.trim()).length,
+        loading: getComputedStyle(document.getElementById('loading')).display,
+      }));
+      let v = await vis();
+      check('樣式表 404(明細頁):一張表單都沒攤開、沒有空的紅框、「載入中」收掉', v.modals.length === 0 && v.emptyAlerts === 0 && v.loading === 'none' && await P.isVisible('#cc-style-warn'), v);
+      await P.click('#newBtn');
+      v = await vis();
+      check('樣式表 404:按「記一筆」只看得到那一張表單(不是三張)', v.modals.length === 1 && v.modals[0] === 'journalModal' && await P.isVisible('#jmSaveBtn') && !(await P.isVisible('#jmError')), v);
+      check('樣式表 404:沒有 JS 錯誤、沒有系統小視窗', tj.errors.length === 0 && tj.dialogs.length === 0, [tj.errors, tj.dialogs]);
+      await tj.context.close();
+      // 樣式表正常時不出現這條提示
+      const tn = await openPage(browser, makeBackend(), '/dashboard');
+      await tn.page.waitForSelector('#content:not(.d-none)');
+      check('樣式表正常:沒有「頁面樣式載不出來」提示', (await tn.page.$('#cc-style-warn')) === null && (await tn.page.$('#cc-fallback-css')) === null);
+      await tn.context.close();
+    }
+
     // ============ 8. 報表頁 ============
     section('8. reports.html');
     {
@@ -1075,24 +1133,47 @@ async function main() {
       await P.waitForSelector('#content:not(.d-none)');
       check('關帳(擁有者):看得到「關帳到」日期欄和儲存鈕,預填目前關帳日 2026-09-30', await P.isVisible('#fClosed') && await P.isVisible('#saveCloseBtn') && (await P.inputValue('#fClosed')) === '2026-09-30' && !(await P.isVisible('#closeText')));
       const closeTxt = await P.textContent('#closeCard');
-      check('關帳說明用白話(「關帳日以前的帳不能再改;要改先把日期往前調」),不出現欄位名', /關帳日以前的帳不能再改;要改先把日期往前調/.test(closeTxt) && !/closed_through|PATCH|409/.test(closeTxt), closeTxt);
-      await P.fill('#fClosed', '2026-10-15');
+      check('關帳說明用白話(「關帳日以前的帳不能再改。要解鎖按「取消關帳」,或把日期往前調」),不出現欄位名', /關帳日以前的帳不能再改。要解鎖按「取消關帳」,或把日期往前調/.test(closeTxt) && !/closed_through|PATCH|409/.test(closeTxt), closeTxt);
+      const D1 = taipeiDate(-1);   // 關帳日不能晚於今天:存的日期一律用昨天
+      check('關帳日期欄 max = 台北時間今天;目前已關帳所以「取消關帳」鈕可按', (await P.getAttribute('#fClosed', 'max')) === taipeiDate(0) && await P.isVisible('#cancelCloseBtn') && await P.isEnabled('#cancelCloseBtn'), await P.getAttribute('#fClosed', 'max'));
+      await P.fill('#fClosed', taipeiDate(1));
+      await P.click('#saveCloseBtn');
+      await P.waitForSelector('#closeCard .cc-result.bad');
+      check('關帳日晚於今天:擋下、白話說明、沒送請求', /不能晚於今天/.test(await P.textContent('#closeCard .cc-result')) && callsTo(b, 'PATCH', /^\/B\/NEST0001$/).length === 0);
+      await P.fill('#fClosed', D1);
       await P.click('#saveCloseBtn');
       await P.waitForSelector('#closeCard .cc-result.ok');
       const pc = callsTo(b, 'PATCH', /^\/B\/NEST0001$/);
-      check('關帳:儲存只送 closed_through = 2026-10-15,結果留在關帳卡片裡', pc.length === 1 && JSON.stringify(pc[0].body) === '{"closed_through":"2026-10-15"}' && /已關帳到 2026-10-15/.test(await P.textContent('#closeCard .cc-result')), pc);
+      check('關帳:儲存只送 closed_through = 昨天,結果留在關帳卡片裡', pc.length === 1 && JSON.stringify(pc[0].body) === JSON.stringify({ closed_through: D1 }) && new RegExp('已關帳到 ' + D1).test(await P.textContent('#closeCard .cc-result')), pc);
       await P.fill('#fClosed', '');
       await P.click('#saveCloseBtn');
       await P.waitForFunction(() => { const r = document.querySelector('#closeCard .cc-result'); return !!r && /已取消關帳/.test(r.textContent); });
       const pc2 = callsTo(b, 'PATCH', /^\/B\/NEST0001$/);
       check('取消關帳:日期清空再儲存 → 送 closed_through = null', pc2.length === 2 && pc2[1].body.closed_through === null, pc2.map((c) => c.body));
+      check('沒關帳時「取消關帳」鈕灰掉', await P.isDisabled('#cancelCloseBtn'));
+      // 獨立的「取消關帳」鈕(iOS 日期欄不一定有清除):先關帳,再按取消 → 自畫確認框 → 確認才送
+      await P.fill('#fClosed', D1);
+      await P.click('#saveCloseBtn');
+      await P.waitForFunction(() => document.getElementById('cancelCloseBtn').disabled === false);
+      await P.click('#cancelCloseBtn');
+      await P.waitForSelector('.cc-dlg');
+      check('取消關帳:跳出自畫確認框,文案「確定取消關帳?取消後以前的帳又可以改了」', /確定取消關帳\?取消後以前的帳又可以改了/.test(await P.textContent('.cc-dlg')) && t.dialogs.length === 0);
+      await P.click('.cc-dlg .cc-btn:not(.ok):not(.danger)');
+      await sleep(150);
+      check('取消關帳:按「先不要」不送請求', callsTo(b, 'PATCH', /^\/B\/NEST0001$/).length === 3);
+      await P.click('#cancelCloseBtn');
+      await P.waitForSelector('.cc-dlg');
+      await P.click('.cc-dlg .cc-btn.danger');
+      await P.waitForFunction(() => { const r = document.querySelector('#closeCard .cc-result'); return !!r && /已取消關帳/.test(r.textContent) && document.getElementById('cancelCloseBtn').disabled; });
+      const pc3 = callsTo(b, 'PATCH', /^\/B\/NEST0001$/);
+      check('取消關帳:確認後 PATCH 的 closed_through 是 null,日期欄清空、取消鈕又灰掉', pc3.length === 4 && pc3[3].body.closed_through === null && (await P.inputValue('#fClosed')) === '', pc3.map((c) => c.body));
       check('關帳頁沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
       await t.context.close();
       for (const role of ['editor', 'admin', 'viewer']) {
         const b2 = makeBackend({ role, closedThrough: '2026-09-30' });
         const t2 = await openPage(browser, b2, '/settings');
         await t2.page.waitForSelector('#content:not(.d-none)');
-        check('關帳(' + role + '):看不到日期欄和儲存鈕,只看到文字「目前關帳到 2026-09-30」', !(await t2.page.isVisible('#fClosed')) && !(await t2.page.isVisible('#saveCloseBtn')) && await t2.page.isVisible('#closeText') && /目前關帳到 2026-09-30/.test(await t2.page.textContent('#closeText')), await t2.page.textContent('#closeText'));
+        check('關帳(' + role + '):看不到日期欄、儲存鈕和「取消關帳」鈕,只看到文字「目前關帳到 2026-09-30」', !(await t2.page.isVisible('#fClosed')) && !(await t2.page.isVisible('#saveCloseBtn')) && !(await t2.page.isVisible('#cancelCloseBtn')) && await t2.page.isVisible('#closeText') && /目前關帳到 2026-09-30/.test(await t2.page.textContent('#closeText')), await t2.page.textContent('#closeText'));
         await t2.context.close();
       }
       const b3 = makeBackend({ role: 'editor' });

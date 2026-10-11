@@ -648,6 +648,15 @@ if (CC.initPage('journals')) {
       reload();
     } catch (e) {
       if (e.handled) return;
+      if (!editId && e.status === 409 && ((e.data && e.data.code === 'idempotent_mismatch') || /剛才已經送出成功/.test(e.message || ''))) {
+        // 上一次其實已經記進去了(只是回應遺失):關掉表單、換新單號、重載清單讓使用者看到那筆
+        reqId = null;
+        lastResult = null;
+        inlineResult($('opMsg'), true, '✓ ' + e.message);
+        journalModal.hide();
+        reload();
+        return;
+      }
       $('jmError').textContent = e.message;
       $('jmError').classList.remove('d-none');
     } finally {

@@ -215,7 +215,12 @@ app.use((err, req, res, next) => {
   console.error('[error]', err.stack || err);
   if (res.headersSent) return;
   // 4xx 由程式自己丟的(err.status)訊息已白話,照回;其他一律不回原始錯誤 / detail(G2)
-  if (err.status && err.status < 500) return res.status(err.status).json({ error: err.message });
+  if (err.status && err.status < 500) {
+    // errCode(book_closed / account_inactive / idempotent_mismatch…)給前端認用途,不是給人看的;文案在 error
+    const body = { error: err.message };
+    if (typeof err.errCode === 'string' && err.errCode) body.code = err.errCode;
+    return res.status(err.status).json(body);
+  }
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: '送來的資料格式不對' });
   if (err.code === '23505') return res.status(409).json({ error: '資料重複了,已經有一筆一樣的' });
   if (err.code === '23503') return res.status(400).json({ error: '用到的帳戶或科目不存在,請重新整理再試' });

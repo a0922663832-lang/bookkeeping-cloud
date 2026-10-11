@@ -335,7 +335,7 @@ async function runIdempotent(key, bookId, work, bodyHash) {
     const hit = idemMap.get(key);
     if (hit && now - hit.at <= IDEM_TTL_MS) {
       if (hit.journalId) {
-        if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG);
+        if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG, { errCode: 'idempotent_mismatch' });
         const j = await loadJournalForResponse(bookId, hit.journalId);
         if (j) return { journal: j, idempotent: true };
         idemMap.delete(key);   // 那筆不見了(不該發生)→ 當沒做過
@@ -346,7 +346,7 @@ async function runIdempotent(key, bookId, work, bodyHash) {
         } catch (_) { /* 第一次失敗 → 佔位已拿掉,下一輪自己做 */ }
         if (jid) {
           // 第一次成功了:內容不同 → 409;相同 → 回同一筆
-          if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG);
+          if (!sameBody(hit)) throw httpError(409, IDEM_MISMATCH_MSG, { errCode: 'idempotent_mismatch' });
           const j = await loadJournalForResponse(bookId, jid);
           if (j) return { journal: j, idempotent: true };
         }

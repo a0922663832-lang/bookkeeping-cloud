@@ -590,6 +590,48 @@
     } catch (_) { return 'dev-unknown'; }
   }
 
+  // ───────────────────────── Bootstrap 樣式表沒載入時的備援 ─────────────────────────
+  // 店內連不上外網時 bootstrap.min.css 也載不到:d-none 不生效 → 「載入中」收不掉、四張表單全攤開。
+  // 量一個帶 d-none 的隱藏元素,沒變成 display:none 就注入最小備援樣式,並在頁首提醒。
+  var FALLBACK_CSS = [
+    '.d-none{display:none!important}',
+    '.d-flex{display:flex}.flex-wrap{flex-wrap:wrap}.justify-content-between{justify-content:space-between}.align-items-center{align-items:center}',
+    '.gap-2{gap:8px}.gap-3{gap:12px}.ms-auto{margin-left:auto}.w-100{width:100%}',
+    '.text-center{text-align:center}.text-end{text-align:right}.small{font-size:13px}',
+    '.text-muted{color:#888}.text-danger{color:#c4453a}.text-success{color:#1a6a5a}',
+    '.container{max-width:1100px;margin:0 auto;padding:0 16px}',
+    '.row{display:flex;flex-wrap:wrap;gap:12px}.row>*{flex:1 1 220px}',
+    '.modal:not(.show){display:none}',
+    '.collapse:not(.show){display:none}',
+    '.alert{padding:8px 12px;border-radius:8px;background:#fdeae8;color:#a94a3a}.alert:empty{display:none}',
+    '.spinner-border{display:none}',
+    '.btn-close{border:0;background:transparent;font-size:22px;line-height:1;cursor:pointer}.btn-close::before{content:"\\00d7"}',
+    '.form-control,.form-select{padding:6px 8px;border:1px solid #cfc8b8;border-radius:6px;max-width:100%}',
+  ].join('\n');
+
+  function checkStyles() {
+    try {
+      if (!document.body || document.getElementById('cc-style-warn')) return;
+      var probe = document.createElement('div');
+      probe.className = 'd-none';
+      document.body.appendChild(probe);
+      var ok = global.getComputedStyle(probe).display === 'none';
+      document.body.removeChild(probe);
+      if (ok) return;
+      injectStyle();
+      var st = document.createElement('style');
+      st.id = 'cc-fallback-css';
+      st.textContent = FALLBACK_CSS;
+      document.head.appendChild(st);
+      var warn = mk('div', 'cc-notice', '頁面樣式載不出來(店內連不上外網),功能照常。');
+      warn.id = 'cc-style-warn';
+      warn.style.margin = '8px 16px';
+      document.body.insertBefore(warn, document.body.firstChild);
+    } catch (_) { /* 備援失敗就算了,頁面照舊 */ }
+  }
+  if (document.body) checkStyles();
+  else document.addEventListener('DOMContentLoaded', checkStyles);
+
   // ───────────────────────── 匯出 ─────────────────────────
   CC.esc = esc; CC.fmt = fmt; CC.fmtMoney = fmtMoney; CC.fmtSigned = fmtSigned;
   CC.fmtDate = fmtDate; CC.fmtDateTime = fmtDateTime; CC.todayLocal = todayLocal; CC.addDays = addDays;
