@@ -155,12 +155,18 @@ const loadOpen = asyncHandler(loadBookOpen);
 const loadAuth = asyncHandler(loadBookAuth);
 
 // ── N7：per-source per-event_type posting mode resolver ─────────────
+// 反向事件沒有自己的設定列,跟著原事件走(主 repo 訂金體檢包 7):
+//   整單退款把 POS 訂金折抵還回訂金,會推 pos_deposit_offset_return(4101 −x / 4408 +x)。
+//   它要跟原本的 pos_deposit_offset 同一種處理(正式帳本是進待審,老闆按過才入帳);
+//   以前它找不到自己的設定,掉到帳本全域 posting_mode,原折抵待審、還回卻可能直接入帳,兩邊對不起來。
+const EVENT_MODE_ALIAS = { pos_deposit_offset_return: 'pos_deposit_offset' };
 function resolvePostingMode(book, source, eventType) {
   const cfg = book.posting_mode_per_source || {};
   const sourceVal = cfg[source];
   if (typeof sourceVal === 'string') return sourceVal;
   if (sourceVal && typeof sourceVal === 'object') {
-    return sourceVal[eventType] || sourceVal._default || book.posting_mode;
+    const alias = EVENT_MODE_ALIAS[eventType];
+    return sourceVal[eventType] || (alias && sourceVal[alias]) || sourceVal._default || book.posting_mode;
   }
   return book.posting_mode || 'review';
 }
@@ -1461,6 +1467,7 @@ module.exports.helpers = {
 };
 // 純函式(scratchpad 小測試用)
 module.exports.pure = {
+  resolvePostingMode,
   compositeGap,
   compositeHeaderAmount,
   assertCompositeBalanced,

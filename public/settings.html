@@ -141,6 +141,7 @@ if (CC.initPage('settings')) {
   const SOURCES = [
     { source: 'leo_pos', event: 'pos_shift_settled', label: 'POS 收班' },
     { source: 'leo_pos', event: 'pos_deposit_offset', label: '訂金抵用' },
+    { source: 'leo_pos', event: 'pos_deposit_offset_return', label: '訂金抵用退回(整單退款)' },
     { source: 'leo_expense', event: 'expense_created', label: '支出單' },
     { source: 'leo_inventory', event: null, label: '進貨' },
     { source: 'leo_inline', event: null, label: '訂金 / 刷卡撥款' },
@@ -153,7 +154,9 @@ if (CC.initPage('settings')) {
     const v = cfg[source];
     if (typeof v === 'string') return { mode: v, inherited: false };
     if (v && typeof v === 'object') {
-      const m = (event && v[event]) || v._default;
+      // 反向事件沒有自己的設定,跟著原事件走(對照 posting.js 的 EVENT_MODE_ALIAS)
+      const alias = event === 'pos_deposit_offset_return' ? 'pos_deposit_offset' : null;
+      const m = (event && v[event]) || (alias && v[alias]) || v._default;
       if (m) return { mode: m, inherited: false };
     }
     return { mode: book.posting_mode || 'review', inherited: true };

@@ -141,6 +141,8 @@ const leo = http.createServer((req, res) => {
   eq(r.bucket, 'settled', '現場沒給金額(舊版)→ 不比金額');
   r = await evaluate(evOf({ event_type: 'pos_deposit_offset', amount: 77 }));
   eq(r.bucket, 'settled', '訂金抵用不比金額(科目腳合計本來就是 0)');
+  r = await evaluate(evOf({ event_type: 'pos_deposit_offset_return', amount: 77 }));
+  eq(r.bucket, 'settled', '整單退款還回訂金(反向事件 pos_deposit_offset_return)同樣不比金額');
 
   // R8:改單後雲端是 @v2,舊單號被沖銷
   reset();

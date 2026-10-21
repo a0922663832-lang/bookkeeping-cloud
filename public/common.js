@@ -100,7 +100,7 @@
     leo_pos: '點餐結帳', leo_expense: '支出單', leo_inventory: '進貨', leo_inline: '訂金 / 刷卡撥款', leo_hr: '薪資',
   };
   var EVENT_NAME = {
-    pos_shift_settled: 'POS 收班', pos_deposit_offset: '訂金抵用',
+    pos_shift_settled: 'POS 收班', pos_deposit_offset: '訂金抵用', pos_deposit_offset_return: '訂金抵用退回',
     expense_created: '支出', 'expense.created': '支出',
     invoice_receipt: '進貨發票', invoice_payment: '進貨付款', vendor_monthly_bill_paid: '月結帳單付款',
     deposit_paid: '收訂金', deposit_refunded: '退訂金', deposit_voided: '訂金作廢',
@@ -113,7 +113,7 @@
     ['invoice.receipt.', 'invoice_receipt'], ['invoice.payment.', 'invoice_payment'], ['bill.paid.', 'vendor_monthly_bill_paid'],
     ['deposit.paid.', 'deposit_paid'], ['deposit.supersede.', 'deposit_paid'], ['deposit.refund.', 'deposit_refunded'], ['deposit.void.', 'deposit_voided'],
     ['inline_payout.', 'inline_payout_transfer'],
-    ['pos_shift.', 'pos_shift_settled'], ['pos_deposit_offset.', 'pos_deposit_offset'],
+    ['pos_shift.', 'pos_shift_settled'], ['pos_deposit_offset.', 'pos_deposit_offset'], ['pos_deposit_offset_return.', 'pos_deposit_offset_return'],
     ['payroll.', 'payroll_finalized'], ['insurance_payment.', 'insurance_payment'],
   ];
   // 待審單的事件名:有 event_type 就用,否則看 event_id,都沒有回 ''

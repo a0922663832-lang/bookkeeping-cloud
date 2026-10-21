@@ -38,8 +38,8 @@ const TIMEZONE = 'Asia/Taipei';
 const REVERIFY_DAYS = 7;                 // 昨天之外,再往前回驗幾天
 const TRANSIT_MAX_DAYS = 3;              // 在途超過幾天算差異(LEO 拍板 6)
 const AMOUNT_TOLERANCE = 0.5;            // 金額一律整數元;留 0.5 容許小數尾差
-// 這些事件雲端單頭金額不等於現場金額(訂金抵用 = 4408 −X / 4101 +X,科目腳合計為 0),不比金額
-const SKIP_AMOUNT_EVENTS = new Set(['pos_deposit_offset']);
+// 這些事件雲端單頭金額不等於現場金額(訂金抵用 = 4408 −X / 4101 +X,科目腳合計為 0;整單退款還回訂金是反向的 4101 −X / 4408 +X,一樣為 0),不比金額
+const SKIP_AMOUNT_EVENTS = new Set(['pos_deposit_offset', 'pos_deposit_offset_return']);
 
 // ── 日期(固定 UTC+8,台灣沒有日光節約;不依賴容器 TZ)─────────────────
 const TPE_OFFSET_MS = 8 * 3600 * 1000;
