@@ -98,6 +98,173 @@ function f2(v) {
   return num(v).toFixed(2);
 }
 
+// ── 平均顯示(smooth=1)純函式:兩個月一期的帳單依天數攤到各月 ─────────────
+// 全部用整數「分」運算(不經浮點累加);輸出才換回元。攤分單位 = 整數元,餘數給最後一個月。
+function ymdToDayNum(s) {
+  if (!isRealDate(s)) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000);
+}
+
+/**
+ * 把 cents 依 period(含頭含尾)的天數攤到跨到的每個月。
+ * 回傳 [{ym:'YYYY-MM', days, cents}],各月 cents 加總 = 原 cents;日期不對 / 起訖顛倒 / 金額 ≤ 0 → null。
+ */
+function allocateByDays(cents, start, end) {
+  const a = ymdToDayNum(start);
+  const b = ymdToDayNum(end);
+  if (a == null || b == null || b < a || b - a >= 800) return null;
+  if (!Number.isInteger(cents) || cents <= 0) return null;
+  const segs = [];
+  let cur = a;
+  while (cur <= b) {
+    const d = new Date(cur * 86400000);
+    const y = d.getUTCFullYear();
+    const mo = d.getUTCMonth();
+    const monthEnd = Math.floor(Date.UTC(y, mo + 1, 0) / 86400000);
+    const segEnd = Math.min(b, monthEnd);
+    segs.push({ ym: `${y}-${String(mo + 1).padStart(2, '0')}`, days: segEnd - cur + 1, cents: 0 });
+    cur = segEnd + 1;
+  }
+  const total = b - a + 1;
+  let used = 0;
+  segs.forEach((sg, i) => {
+    if (i === segs.length - 1) { sg.cents = cents - used; return; }
+    // round(cents × days / total) 到整數元(100 分),整數除法四捨五入
+    sg.cents = Math.floor((2 * cents * sg.days + total * 100) / (2 * total * 100)) * 100;
+    used += sg.cents;
+  });
+  return segs;
+}
+
+function ymAdd(ym, delta) {
+  const [y, m] = ym.split('-').map(Number);
+  const idx = y * 12 + (m - 1) + delta;
+  return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+}
+
+function centsOf(v) { return Math.round(parseFloat(v || 0) * 100); }
+function yuanStr(cents) { return (cents / 100).toFixed(2); }
+
+/**
+ * 估算:同一個「科目 + 電號」系列,本月沒攤到任何份、且本月 ≤ 今天所在月份 → 過去 12 個月有攤到的月份取平均(整數元)。
+ * monthCents = {ym: cents};回傳估算分數(0 = 不估)。
+ */
+function estimateForSeries(monthCents, thisYm, todayYm) {
+  if (thisYm > todayYm) return 0;
+  if ((monthCents[thisYm] || 0) > 0) return 0;
+  let sum = 0;
+  let n = 0;
+  for (let i = 1; i <= 12; i++) {
+    const c = monthCents[ymAdd(thisYm, -i)] || 0;
+    if (c > 0) { sum += c; n++; }
+  }
+  if (n === 0) return 0;
+  return Math.round(sum / n / 100) * 100;
+}
+
+/**
+ * rows:SQL 撈回的費用單 [{id, subject_id, code, name, display_order, amount, summary, note, eff_date}]。
+ * t3Rows:原本月報的費用 by_subject。回傳 { by_subject, deltaCents, smoothing }。
+ */
+function smoothMonthly(t3Rows, rows, year, month, todayYm) {
+  const thisYm = monthLabel(year, month);
+  const delta = new Map();      // subject_id → cents
+  const subjInfo = new Map();   // subject_id → {code,name,display_order}
+  const bills = [];
+  const series = new Map();     // `${subject_id}|${account_no}` → {subject_id, code, name, account_no, monthCents}
+  const addDelta = (sid, c) => delta.set(sid, (delta.get(sid) || 0) + c);
+
+  for (const r of rows) {
+    if (typeof r.note !== 'string' || !/^\s*\{/.test(r.note)) continue;
+    let obj;
+    try { obj = JSON.parse(r.note); } catch (_) { continue; }
+    if (!obj || !obj.period || typeof obj.period.start !== 'string' || typeof obj.period.end !== 'string') continue;
+    const cents = centsOf(r.amount);
+    const segs = allocateByDays(cents, obj.period.start, obj.period.end);
+    if (!segs) continue;
+    subjInfo.set(r.subject_id, { code: r.code, name: r.name, display_order: r.display_order });
+
+    const effYm = String(r.eff_date).slice(0, 7);
+    const share = (segs.find(sg => sg.ym === thisYm) || { cents: 0 }).cents;
+    if (effYm === thisYm) addDelta(r.subject_id, -cents);
+    if (share > 0) addDelta(r.subject_id, share);
+    if (effYm === thisYm || share > 0) {
+      bills.push({
+        journal_id: r.id, summary: r.summary || '', subject_code: r.code,
+        period: { start: obj.period.start, end: obj.period.end },
+        amount: yuanStr(cents), allocated_this_month: yuanStr(share),
+      });
+    }
+
+    // 主系統的支出單把自己的 note(JSON 字串)包在 noteObj.note 裡:{"note":"{\"fixed_cost\":{…}}","period":{…}}
+    let fc = obj.fixed_cost;
+    if (!fc && typeof obj.note === 'string' && /^\s*\{/.test(obj.note)) {
+      try { const inner = JSON.parse(obj.note); fc = inner && inner.fixed_cost; } catch (_) { fc = null; }
+    }
+    const accNo = fc && fc.account_no != null ? String(fc.account_no).trim() : '';
+    if (accNo) {
+      const key = `${r.subject_id}|${accNo}`;
+      if (!series.has(key)) series.set(key, { subject_id: r.subject_id, code: r.code, name: r.name, account_no: accNo, monthCents: {} });
+      const sr = series.get(key);
+      for (const sg of segs) sr.monthCents[sg.ym] = (sr.monthCents[sg.ym] || 0) + sg.cents;
+    }
+  }
+
+  const estimates = [];
+  for (const sr of series.values()) {
+    const est = estimateForSeries(sr.monthCents, thisYm, todayYm);
+    if (est > 0) {
+      addDelta(sr.subject_id, est);
+      estimates.push({ code: sr.code, name: sr.name, account_no: sr.account_no, amount: yuanStr(est), basis: 'avg12' });
+    }
+  }
+
+  const out = t3Rows.map(r => ({ ...r }));
+  const bySid = new Map(out.map(r => [r.subject_id, r]));
+  let deltaCents = 0;
+  for (const [sid, d] of delta) {
+    deltaCents += d;
+    if (d === 0) continue;
+    let row = bySid.get(sid);
+    if (!row) {
+      const info = subjInfo.get(sid);
+      if (!info) continue;
+      row = { subject_id: sid, code: info.code, name: info.name, parent_type: 't3', display_order: info.display_order, amount: '0.00' };
+      out.push(row);
+      bySid.set(sid, row);
+    }
+    row.amount = yuanStr(centsOf(row.amount) + d);
+  }
+  const by_subject = out
+    .filter(r => centsOf(r.amount) !== 0)
+    .sort((x, y) => (x.display_order - y.display_order) || String(x.code).localeCompare(String(y.code)));
+
+  return { by_subject, deltaCents, smoothing: { applied: true, bills, estimates } };
+}
+
+// 撈 smooth 要用的費用單:未沖銷、非沖銷單本身、note 看起來是 JSON(細節在 JS 端 try JSON.parse)
+async function getSmoothingRows(bookId, year, month) {
+  const from = `${ymAdd(monthLabel(year, month), -13)}-01`;
+  const toYm = ymAdd(monthLabel(year, month), 3);
+  const [ty, tm] = toYm.split('-').map(Number);
+  const to = `${toYm}-${String(new Date(ty, tm, 0).getDate()).padStart(2, '0')}`;
+  const r = await query(`
+    SELECT j.id, j.subject_id, j.amount, j.summary, j.note,
+           to_char(COALESCE(j.original_date, j.date), 'YYYY-MM-DD') AS eff_date,
+           s.code, s.name, s.display_order
+      FROM journal_logs j
+      JOIN subjects s ON s.id = j.subject_id
+     WHERE j.book_id = $1
+       AND j.type = 'expense' AND j.is_composite = FALSE
+       AND j.reverses_id IS NULL AND j.reversed_by_id IS NULL
+       AND s.parent_type = 't3'
+       AND COALESCE(j.original_date, j.date) BETWEEN $2::date AND $3::date
+       AND j.note ~ '^\\s*\\{'
+  `, [bookId, from, to]);
+  return r.rows;
+}
+
 /**
  * 規格書 §5.2 正負號矩陣(單式單 income / expense):
  *   income  × t1/t5 → +1      expense × t2/t3 → +1
@@ -415,14 +582,26 @@ router.get('/B/:bookCode/reports/monthly', loadBook, asyncHandler(async (req, re
   const sumAmt = arr => arr.reduce((s, r) => s + num(r.amount), 0);
   const incomeTotal = sumAmt(t1);
   const costTotal = sumAmt(t2);
-  const expenseTotal = sumAmt(t3);
+  let expenseRows = t3;
+  let expenseTotal = sumAmt(t3);
+
+  // smooth=1:兩個月一期的費用依天數攤到各月 + 還沒到的月份放估算(沒帶 smooth 完全不進來)
+  let smoothing = null;
+  if (req.query.smooth === '1') {
+    const rows = await getSmoothingRows(req.book.id, range.year, range.month);
+    const todayYm = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 7);
+    const sm = smoothMonthly(t3, rows, range.year, range.month, todayYm);
+    expenseRows = sm.by_subject;
+    expenseTotal = (centsOf(f2(expenseTotal)) + sm.deltaCents) / 100;
+    smoothing = sm.smoothing;
+  }
   const profit = incomeTotal - costTotal - expenseTotal;
 
   const cnt = await countTransactions(req.book.id, range.from, range.to);
   const pending = await getPendingSummary(req.book.id, range.from, range.to);   // §4.6
   const closedThrough = await getClosedThrough(req.book.id);                     // §4.8
 
-  res.json({
+  const body = {
     year: range.year, month: range.month,
     from: range.from, to: range.to,
     pending,
@@ -430,10 +609,12 @@ router.get('/B/:bookCode/reports/monthly', loadBook, asyncHandler(async (req, re
     closed_through: closedThrough,
     income: { total: f2(incomeTotal), by_subject: t1 },
     cost: { total: f2(costTotal), by_subject: t2 },
-    expense: { total: f2(expenseTotal), by_subject: t3 },
+    expense: { total: f2(expenseTotal), by_subject: expenseRows },
     profit: f2(profit),
     transaction_count: cnt,
-  });
+  };
+  if (smoothing) body.smoothing = smoothing;
+  res.json(body);
 }));
 
 // ── GET /B/:bookCode/reports/yearly?year= ──────────────────────────────
@@ -698,4 +879,4 @@ router.use((err, req, res, next) => {
 
 module.exports = router;
 // 純函式(scratchpad 小測試用)
-module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate, summarizePending, pendingAmount };
+module.exports.pure = { monthRange, signFor, signedCaseSql, isRealDate, summarizePending, pendingAmount, allocateByDays, estimateForSeries, smoothMonthly };

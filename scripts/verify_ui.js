@@ -208,6 +208,21 @@ function makeBackend(opts) {
       }, pendingField));
     }
     if (p === B + '/reports/monthly') {
+      if (url.searchParams.get('smooth') === '1') {
+        // 平均顯示:電費 9/10–11/9 共 8,532 本月攤 4,266;電信本月帳單還沒到,先估 1,980(含預估)
+        return json(200, Object.assign({
+          year: 2026, month: 10, profit: -7246, transaction_count: 7,
+          income: { total: 1000, by_subject: [{ code: '4101', name: '菜色', amount: '1000.00' }] },
+          cost: { total: 0, by_subject: [] },
+          expense: { total: '8246.00', by_subject: [
+            { code: '6201', name: '水電瓦斯', amount: '4266.00' },
+            { code: '6202', name: '電信網路', amount: '1980.00' },
+            { code: '6901', name: '雜費', amount: '2000.00' }] },
+          smoothing: { applied: true,
+            bills: [{ journal_id: 41, summary: '台電<b>x</b>', subject_code: '6201', period: { start: '2026-09-10', end: '2026-11-09' }, amount: '8532.00', allocated_this_month: '4266.00' }],
+            estimates: [{ code: '6202', name: '中華電信', account_no: '0912000111', amount: '1980.00', basis: 'avg12' }] },
+        }, pendingField));
+      }
       return json(200, Object.assign({
         year: 2026, month: 10, profit: -300, transaction_count: 7,
         income: { total: 1000, by_subject: [{ code: '4101', name: '=HYPERLINK("http://x","點我")', amount: '1200.00' }, { code: '4197', name: '銷貨退回', amount: '-200.00' }] },
@@ -1048,6 +1063,31 @@ async function main() {
       await P.click('.report-tab[data-pane=yearly]');
       await P.waitForSelector('#yContent:not(.d-none)');
       check('年報有畫趨勢圖,沒有 JS 錯誤', await P.evaluate(() => window.__charts.length >= 1) && t.errors.length === 0, t.errors);
+      await t.context.close();
+    }
+
+    {
+      // 月報「兩個月一期的費用平均顯示」開關
+      const b = makeBackend({});
+      const t = await openPage(browser, b, '/reports');
+      const P = t.page;
+      await P.waitForSelector('#mContent:not(.d-none)');
+      const mq = () => b.calls.filter((c) => c.path.endsWith('/reports/monthly')).pop();
+      check('平均顯示:預設關,請求不帶 smooth,明細區是空的', !('smooth' in mq().query) && (await P.innerHTML('#mSmoothDetail')) === '' && !/含預估/.test(await P.innerText('body')), mq().query);
+      await P.check('#mSmooth');
+      await P.waitForFunction(() => /含預估/.test(document.body.innerText));
+      check('平均顯示:打開 → 請求帶 smooth=1', mq().query.smooth === '1', mq().query);
+      const txt = await P.textContent('#mContent');
+      check('平均顯示:被估算的科目那列有「含預估 1,980 元」,沒估的科目沒有', txt.indexOf('含預估 1,980 元') > txt.indexOf('電信網路') && txt.indexOf('電信網路') >= 0 && txt.split('含預估').length === 2, txt.slice(0, 400));
+      const dtl = await P.textContent('#mSmoothDetail');
+      check('平均顯示:明細區列出攤分(9/10–11/9 共 $8,532,本月攤 $4,266)與估算(本月帳單還沒到,先估 $1,980)', dtl.indexOf('9/10–11/9 共 $8,532,本月攤 $4,266') >= 0 && dtl.indexOf('中華電信 0912000111 本月帳單還沒到,先估 $1,980') >= 0, dtl);
+      check('平均顯示:明細文字已跳脫、頁面不出現欄位名', (await P.$('#mSmoothDetail b')) === null && !/allocated|smoothing|avg12|account_no/.test(await P.textContent('#mSmoothDetail')));
+      check('平均顯示:費用合計與損益跟著後端數字', (await P.textContent('#mKpiExpense')) === '$8,246' && (await P.textContent('#mKpiProfit')) === '-$7,246', [await P.textContent('#mKpiExpense'), await P.textContent('#mKpiProfit')]);
+      check('平均顯示:選擇存在 localStorage', (await P.evaluate(() => localStorage.getItem('reports.smooth'))) === '1');
+      await P.uncheck('#mSmooth');
+      await P.waitForFunction(() => document.getElementById('mKpiExpense').textContent === '$1,300' && !document.getElementById('mContent').classList.contains('d-none'));
+      check('平均顯示:關掉 → 請求不帶 smooth,明細區消失,畫面回到原本', !('smooth' in mq().query) && (await P.innerHTML('#mSmoothDetail')) === '' && (await P.textContent('#mKpiExpense')) === '$1,300', mq().query);
+      check('平均顯示:沒有 JS 錯誤、沒有系統小視窗', t.errors.length === 0 && t.dialogs.length === 0, [t.errors, t.dialogs]);
       await t.context.close();
     }
 

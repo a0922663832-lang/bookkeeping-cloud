@@ -50,6 +50,11 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
 .cp-type-chip.expense{background:#fdeae8;color:#a94a3a}
 .cp-type-chip.both{background:#eaf0fa;color:#1a4a8a}
 
+.inactive-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#888}
+.est-note{display:block;font-size:11px;color:#a06a00;font-weight:400}
+.smooth-box{margin-top:18px;padding:14px 16px;background:#faf7ef;border:1px solid #eadfc4;border-radius:8px;font-size:13px}
+.smooth-box ul{margin:6px 0 0;padding-left:18px}
+.smooth-box li{margin-bottom:3px}
 .section-title{font-size:15px;font-weight:600;margin-bottom:12px;color:#1a1814}
 .section-title em{color:#888;font-weight:400;font-size:12px;font-style:normal;margin-left:6px}
 .bar-fill{height:6px;background:#f0ece4;border-radius:3px;overflow:hidden;margin-top:3px}
@@ -78,6 +83,7 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
       <div class="filter-bar">
         <div class="form-group"><label>月份</label><input type="month" class="form-control form-control-sm" id="mYear"></div>
         <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline-primary btn-sm" onclick="loadMonthly()">查詢</button></div>
+        <div class="form-group"><label>&nbsp;</label><label class="inactive-toggle"><input type="checkbox" id="mSmooth" onchange="onSmoothToggle()"> 兩個月一期的費用平均顯示</label></div>
         <div class="form-group ms-auto"><label>&nbsp;</label><button class="btn btn-outline-secondary btn-sm" onclick="exportMonthlyCsv()">📥 匯出 CSV</button></div>
       </div>
       <div id="mMsg"></div>
@@ -105,6 +111,7 @@ table.rpt-table tr.total-row td{border-top:2px solid #e8e2d5;padding:11px 10px}
             <table class="rpt-table"><thead><tr><th>科目</th><th class="text-end">金額</th><th class="text-end">占比</th></tr></thead><tbody id="mCostBody"></tbody></table>
           </div>
         </div>
+        <div id="mSmoothDetail"></div>
       </div>
     </div>
   </div>
@@ -232,6 +239,12 @@ if (CC.initPage('reports')) {
   let monthlyData = null, yearlyData = null, cpData = null;
 
   // ──────── 月報 ────────
+  function smoothOn() { return !!$('mSmooth').checked; }
+  function onSmoothToggle() {
+    try { localStorage.setItem('reports.smooth', smoothOn() ? '1' : '0'); } catch (_) {}
+    loadMonthly();
+  }
+  try { $('mSmooth').checked = localStorage.getItem('reports.smooth') === '1'; } catch (_) {}
   async function loadMonthly() {
     const v = $('mYear').value;
     if (!v) return;
@@ -241,7 +254,7 @@ if (CC.initPage('reports')) {
     $('mContent').classList.add('d-none');
     inlineResult($('mMsg'), true, '');
     try {
-      const r = await api(`/B/${BOOK}/reports/monthly?year=${encodeURIComponent(y)}&month=${parseInt(m, 10)}`);
+      const r = await api(`/B/${BOOK}/reports/monthly?year=${encodeURIComponent(y)}&month=${parseInt(m, 10)}${smoothOn() ? '&smooth=1' : ''}`);
       monthlyData = r;
       renderMonthly(r);
       loaded.monthly = true;
@@ -270,9 +283,26 @@ if (CC.initPage('reports')) {
     CC.pendingNotice($('mPending'), r.pending);
     renderBreakdownTable('mIncomeBody', r.income.by_subject, r.income.total, 'pos');
     renderBreakdownTable('mCostBody', r.cost.by_subject, r.cost.total, 'neg');
-    renderBreakdownTable('mExpenseBody', r.expense.by_subject, r.expense.total, 'neg');
+    renderBreakdownTable('mExpenseBody', r.expense.by_subject, r.expense.total, 'neg', r.smoothing ? r.smoothing.estimates : null);
+    renderSmoothDetail(r.smoothing);
   }
-  function renderBreakdownTable(bodyId, rows, total, amountClass) {
+  function mdText(ymd) { const p = String(ymd).split('-'); return parseInt(p[1], 10) + '/' + parseInt(p[2], 10); }
+  function renderSmoothDetail(sm) {
+    const box = $('mSmoothDetail');
+    if (!sm) { box.innerHTML = ''; return; }
+    const bills = sm.bills || [];
+    const ests = sm.estimates || [];
+    const li = [];
+    for (const b of bills) {
+      li.push('<li>' + esc((b.summary || '費用') + ' ' + mdText(b.period.start) + '–' + mdText(b.period.end) + ' 共 ' + fmtMoney(parseFloat(b.amount)) + ',本月攤 ' + fmtMoney(parseFloat(b.allocated_this_month))) + '</li>');
+    }
+    for (const e of ests) {
+      li.push('<li>' + esc(e.name + ' ' + e.account_no + ' 本月帳單還沒到,先估 ' + fmtMoney(parseFloat(e.amount))) + '<span class="est-note">(預估:拿過去幾個月的平均)</span></li>');
+    }
+    box.innerHTML = '<div class="smooth-box"><div class="section-title" style="font-size:14px;margin-bottom:0">平均攤分明細</div>' +
+      (li.length ? '<ul>' + li.join('') + '</ul>' : '<div class="text-muted mt-1">這個月沒有需要平均的帳單</div>') + '</div>';
+  }
+  function renderBreakdownTable(bodyId, rows, total, amountClass, estimates) {
     const tot = parseFloat(total) || 0;
     if (rows.length === 0) { $(bodyId).innerHTML = '<tr><td colspan="3" class="text-center text-muted py-3">無資料</td></tr>'; return; }
     $(bodyId).innerHTML = rows.map((row) => {
@@ -282,12 +312,17 @@ if (CC.initPage('reports')) {
       const barW = pctNum > 0 ? Math.min(100, pctNum).toFixed(1) : '0';   // 負數 / 零不畫條
       return `<tr>
         <td><code>${esc(row.code || '')}</code> ${esc(row.name)}</td>
-        <td class="amount-cell ${amountClass}">${esc(fmtMoney(a))}</td>
+        <td class="amount-cell ${amountClass}">${esc(fmtMoney(a))}${estNote(row, estimates)}</td>
         <td class="percent-cell">${esc(pct)}%<div class="bar-fill"><div class="bar-inner ${amountClass === 'pos' ? 'income' : 'expense'}" style="width:${barW}%"></div></div></td>
       </tr>`;
     }).join('') + `
       <tr class="total-row"><td>合計</td><td class="amount-cell ${amountClass}">${esc(fmtMoney(tot))}</td><td class="percent-cell">100%</td></tr>
     `;
+  }
+  function estNote(row, estimates) {
+    if (!estimates || !estimates.length) return '';
+    const sum = estimates.filter((e) => e.code === row.code).reduce((t, e) => t + (parseFloat(e.amount) || 0), 0);
+    return sum > 0 ? '<span class="est-note">含預估 ' + esc(fmtMoney(sum).replace('$', '')) + ' 元</span>' : '';
   }
   function exportMonthlyCsv() {
     if (!monthlyData) { inlineResult($('mMsg'), false, '請先按「查詢」,有結果再匯出'); return; }
@@ -488,7 +523,7 @@ if (CC.initPage('reports')) {
 
   // 靜態按鈕上的 onclick="…" 要找得到這些函式(async 函式放在區塊裡不會自動變全域)
   Object.assign(window, {
-    switchPane, loadMonthly, loadYearly, loadCounterparties, exportMonthlyCsv, exportYearlyCsv, exportCpCsv,
+    switchPane, loadMonthly, onSmoothToggle, loadYearly, loadCounterparties, exportMonthlyCsv, exportYearlyCsv, exportCpCsv,
   });
 
   // 回到前景:重抓目前看的那一頁

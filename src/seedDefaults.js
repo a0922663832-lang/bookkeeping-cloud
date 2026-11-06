@@ -24,6 +24,7 @@ const DEFAULT_SUBJECTS = [
   // t3 費用
   { code: '6101', name: '房租', parent_type: 't3', display_order: 210 },
   { code: '6201', name: '水電瓦斯', parent_type: 't3', display_order: 220 },
+  { code: '6202', name: '電信網路', parent_type: 't3', display_order: 225 },
   { code: '6301', name: '清潔用品', parent_type: 't3', display_order: 230 },
   { code: '6401', name: '修繕維護', parent_type: 't3', display_order: 240 },
   { code: '6501', name: '行銷廣告', parent_type: 't3', display_order: 250 },
@@ -43,6 +44,7 @@ const DEFAULT_ACCOUNTS = [
   { name: '玉山銀行', type: 'bank', display_order: 20 },
   { name: 'INLINE 訂金待撥', type: 'virtual', display_order: 30 },
   { name: '應付帳款-臨時', type: 'liability', display_order: 40 },
+  { name: '信用卡', type: 'liability', display_order: 50 },
 ];
 
 async function ensureSubject(client, bookId, s) {
